@@ -1,0 +1,1299 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ─── Enums ───────────────────────────────────────────────────────────────────
+
+enum SuperAdminRole {
+  OWNER        // founder, full platform access
+  DEVELOPER    // engineering, infra, debug access
+  BILLING      // finance, invoices, subscriptions
+  ACCOUNTS     // customer success, DSP onboarding & management
+  DSP_SUPPORT  // frontline support, limited read access into DSP data
+}
+
+enum PermissionLevel {
+  OWNER
+  OPERATIONS_ACCOUNT_MANAGER
+  OPERATIONS_MANAGER
+  DISPATCHER
+  DELIVERY_ASSOCIATE
+}
+
+enum EmployeeStatus {
+  ACTIVE
+  ONBOARDING
+  INACTIVE
+  OFFBOARDED
+  TERMINATED
+}
+
+enum VehicleType {
+  STANDARD_PARCEL_ELECTRIC_RIVIAN_MEDIUM  // Standard Parcel Electric - Rivian MEDIUM
+  STANDARD_PARCEL_EXTRA_LARGE_VAN         // Standard Parcel - Extra Large Van - US
+  STANDARD_PARCEL_CDV_14FT               // Standard Parcel - Custom Delivery Van 14ft
+  STANDARD_PARCEL_CDV_12FT               // Standard Parcel - Custom Delivery Van 12ft
+}
+
+enum OwnershipType {
+  AMAZON_RENTAL
+  AMAZON_OWNED
+  LEASE
+  RENTAL
+}
+
+enum VehicleStatus {
+  ACTIVE
+  IN_REPAIR
+  INACTIVE
+  RETIRED     // covers retired + sold
+}
+
+enum ShiftStatus {
+  DRAFT
+  PUBLISHED
+  CONFIRMED
+  COMPLETED
+  CANCELLED
+  NO_CALL_NO_SHOW
+}
+
+enum AvailabilityStatus {
+  SUBMITTED     // driver submitted, manager hasn't reviewed
+  ACKNOWLEDGED  // manager has seen/reviewed
+}
+
+enum RateCriteria {
+  PER_HOUR
+  PER_STOP
+  PER_PACKAGE
+  PER_ROUTE
+  PER_SHIFT
+  FLAT_RATE
+}
+
+enum InvoiceCategory {
+  AMZL_LATE_CANCELLATION
+  DSP_LATE_CANCELLATION
+  SERVICE_TYPE
+}
+
+enum DeviceStatus {
+  ACTIVE
+  INACTIVE
+}
+
+enum DeviceCondition {
+  GOOD
+  CRACKED_SCREEN
+  SHORT_BATTERY
+}
+
+enum ActivityEntityType {
+  DEVICE
+  EMPLOYEE
+  VEHICLE
+  SHIFT
+}
+
+enum ConversationType {
+  DIRECT // 1:1 between exactly two employees
+  GROUP  // named group with 2–20 members
+}
+
+enum LoadOutTaskType {
+  YES_NO    // driver taps Yes or No
+  TEXT      // free-text input
+  NUMERIC   // number input (e.g. mileage, fuel %)
+  PHOTO     // one or more photos from camera/gallery
+  VIN_SCAN  // QR code scan → decoded VIN verified against shift vehicle
+}
+
+enum VehicleImageCategory {
+  LOAD_OUT_INSPECTION
+  RETURN_INSPECTION
+  BREAKDOWN
+  OTHER
+}
+
+enum MaintenanceCategory {
+  LIGHT_REPAIR
+  BODY_DAMAGE
+  MECHANICAL_ELECTRICAL
+  SELF_REPAIR_PROGRAM
+  NON_SELF_REPAIR_FIF
+  TOWING
+  TRANSPORTATION
+  INSURANCE_DEDUCTIBLE
+  REDEPLOYMENT_BODY
+  REDEPLOYMENT_MECHANICAL
+  REDEPLOYMENT_OFFER_ACCEPTED
+  RENTAL_DAMAGES
+  OTHER
+}
+
+enum MaintenanceStatus {
+  OPEN
+  IN_PROGRESS
+  COMPLETED
+  CANCELLED
+}
+
+enum NotificationType {
+  LICENSE_EXPIRY
+  // Future: VEHICLE_REGISTRATION, INSURANCE, CERTIFICATION, etc.
+}
+
+enum NotificationChannel {
+  EMAIL
+  SMS
+  IN_APP
+  MOBILE_PUSH
+}
+
+// ─── Models ──────────────────────────────────────────────────────────────────
+
+// DSP — top-level Amazon Delivery Service Partner company
+model Dsp {
+  id          String   @id @default(cuid())
+  name        String
+  amazonDspId String?  @unique // DSP ID from Cortex URL (for RouteAssist)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  stations       Station[]
+  employees      Employee[]
+  vehicles       Vehicle[]
+  vehicleImages              VehicleImage[]
+  vehicleServicePeriods      VehicleServicePeriod[]
+  vehicleMaintenanceRecords  VehicleMaintenanceRecord[]
+  scheduledMaintenances      ScheduledMaintenance[]
+  maintenanceChecklists      MaintenanceChecklist[]
+  devices        Device[]
+  skills         Skill[]
+  qualifications Qualification[]
+  shifts         Shift[]
+  availabilities Availability[]
+  activityLogs   ActivityLog[]
+  shiftLogs      ShiftLog[]
+  routeCommitments RouteCommitment[]
+  loadOutTemplates LoadOutTemplate[]
+  conversations    Conversation[]
+  scorecardWeeks   ScorecardWeek[]
+  coachingRules    CoachingRule[]
+  announcements    Announcement[]
+  notifications    Notification[]
+  notificationLogs NotificationLog[]
+}
+
+// Station — Amazon delivery station (DSP can have one primary + TCO stations)
+model Station {
+  id    String  @id @default(cuid())
+  dspId String
+  code  String  // station code from onboarding (e.g. "DAX1")
+  name  String? // optional friendly display name (e.g. "Scarborough")
+
+  address        String?
+  latitude       Float?
+  longitude      Float?
+  geofenceEnabled Boolean @default(false)
+  geofenceRadius  Float?  // in meters; only applied when geofenceEnabled = true
+  timezone        String  @default("America/New_York")
+
+  // Optional separate parking lot
+  parkingLotAddress         String?
+  parkingLotLat             Float?
+  parkingLotLng             Float?
+  parkingLotGeofenceEnabled Boolean @default(false)
+  parkingLotGeofenceRadius  Float?  // in meters
+
+  // Settings
+  enrollInDailySummaryReport Boolean @default(false)
+  currency                   String  @default("USD")
+
+  isPrimary Boolean  @default(true) // false = TCO (Temporary Cross-over) station
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  dsp            Dsp            @relation(fields: [dspId], references: [id])
+  employees      Employee[]     @relation("PrimaryStation")
+  vehicles       Vehicle[]
+  devices        Device[]
+  vehicleGroups         VehicleGroup[]
+  vehicleTypes          StationVehicleType[]
+  shiftTypes            ShiftType[]
+  shifts                Shift[]
+  availabilities        Availability[]
+  stationQualifications StationQualification[]
+  rateCards             RateCard[]
+  invoiceTypes          InvoiceType[]
+  routeCommitments      RouteCommitment[]
+  loadOutTemplate       LoadOutTemplate?
+  notificationConfigs   NotificationConfig[]
+
+  @@unique([dspId, code])
+}
+
+// Employee — a person working for the DSP (driver, dispatcher, manager, owner)
+model Employee {
+  id               String          @id @default(cuid())
+  dspId            String?         // null until onboarding step 2 completes
+  primaryStationId String?         // null until onboarding step 2 completes
+  clerkUserId      String?         @unique // null until they accept the invite
+  invitedAt        DateTime?       // set when invitation email is sent; cleared on acceptance
+
+  // Legal name — must match payroll provider (ADP/Paycom) exactly
+  legalFirstName  String
+  legalMiddleName String?
+  legalLastName   String
+
+  // Contact
+  homePhone     String?
+  personalMobile String?
+  workEmail     String?  @unique
+  workMobile    String?
+  workPhone     String?
+  personalEmail String?
+
+  // Employment details
+  hireDate       DateTime?
+  expirationDate DateTime? // driver license expiration
+  birthDate      DateTime?
+  ssnLast4       String?
+  status         EmployeeStatus  @default(ONBOARDING)
+  permissionLevel PermissionLevel @default(DELIVERY_ASSOCIATE)
+  positions       String[]        // Amazon position labels, e.g. ["Helper", "Driver"]
+
+  // Profile & identity
+  nickname      String?
+  title         String?  // job title e.g. "Driver", "Dispatcher"
+  gender        String?
+  employeeCode  String?  // unique HR/payroll code
+  transporterId String?  @unique
+  payrollId     String?
+  gasPin        String?
+
+  // Residential address
+  street       String?
+  city         String?
+  addressState String?
+  zipcode      String?
+
+  // Personal details
+  maritalStatus String?
+  veteranStatus Boolean @default(false)
+  chatEnabled   Boolean @default(true)
+
+  // Sizing
+  pantSize   String?
+  shoeSize   String?
+  tShirtSize String?
+
+  // Driver's license
+  dlNumber String?
+  dlState  String?
+
+  // Employment timeline
+  terminationDate DateTime?
+  rehireDate      DateTime?
+
+  // Supervisor (self-relation)
+  supervisorId String?
+
+  // Van affinity — primary and secondary van assignment
+  primaryVanId   String?
+  secondaryVanId String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  dsp            Dsp?     @relation(fields: [dspId], references: [id])
+  primaryStation Station? @relation("PrimaryStation", fields: [primaryStationId], references: [id])
+
+  supervisor    Employee?  @relation("Supervision", fields: [supervisorId], references: [id])
+  directReports Employee[] @relation("Supervision")
+
+  primaryVan   Vehicle? @relation("PrimaryVanAffinity", fields: [primaryVanId], references: [id])
+  secondaryVan Vehicle? @relation("SecondaryVanAffinity", fields: [secondaryVanId], references: [id])
+
+  employeeSkills         EmployeeSkill[]
+  assignedDevices        Device[]
+  lastUsedDevices        Device[]         @relation("DeviceLastUsedBy")
+  lastUsedVehicles       Vehicle[]        @relation("VehicleLastUsedBy")
+  uploadedVehicleImages  VehicleImage[]   @relation("VehicleImageUploader")
+  shifts                 Shift[]
+  availabilities         Availability[]
+  emergencyContacts      EmergencyContact[]
+  employeeQualifications EmployeeQualification[]
+
+  // Chat
+  conversationParticipations ConversationParticipant[]
+  sentMessages               Message[]
+  messageReadReceipts        MessageRead[]
+  createdConversations       Conversation[]             @relation("ConversationCreatedBy")
+
+  // Scorecards
+  scorecardEntries ScorecardEntry[]
+
+  // Notifications
+  notifications Notification[]
+}
+
+// Vehicle — a van in the fleet
+model Vehicle {
+  id       String @id @default(cuid())
+  dspId    String
+  stationId String
+
+  // Identification
+  vin          String? @unique
+  licensePlate String?
+  year         Int?
+  make         String?
+  model        String?
+  stationVehicleTypeId String?
+  amazonBranded    Boolean @default(false)
+  cubicFeetStorage Float?
+
+  // Ownership
+  ownershipType OwnershipType
+  leaseStart    DateTime?
+  leaseEnd      DateTime?
+  leaseCompany  String?
+  rentalStart   DateTime?
+  rentalEnd     DateTime?
+  rentalCompany String?
+
+  // Compliance & tracking
+  licensePlateExpiration DateTime?
+  licensePlateState      String?
+  eldUnitCode            String?   // 6-char alphanumeric ELD identifier
+  status                 VehicleStatus @default(ACTIVE)
+
+  // Required qualification to drive this vehicle (e.g. CDV, Class B)
+  requiredQualificationId String?
+
+  // Business key — user-entered, unique per DSP (e.g. "DAX1-001", "456321")
+  vehicleId    String?
+
+  // Core info
+  notes        String?
+  heightInches Float?
+
+  // Operational
+  overnightParkingLocation String?
+  tollCardId               String?
+
+  // Fuel & consumption
+  gasolineType        String?
+  tankCapacityGallons Float?
+  fuelCardNumber      String?
+  currentMileage      Float?   // updated from latest driver inspection
+  currentFuelPercent  Float?   // 0–100, from latest driver inspection
+
+  // Insurance
+  insuranceCompany String?
+  policyNumber     String?
+  policyExpiration DateTime?
+
+  // Lease details (ownershipType = LEASE)
+  leaseAgreementNumber String?
+  leasePricePerMonth   Float?
+  leaseDeposit         Float?
+  leaseInitialOdometer Float?
+  leaseInitialDate     DateTime?
+  leaseReturnOdometer  Float?
+  leaseReturnDate      DateTime?
+
+  // Rental details (ownershipType = RENTAL or AMAZON_RENTAL)
+  rentalAgreementNumber String?
+  rentalPricePerMonth   Float?
+  rentalDeposit         Float?
+  rentalRecurringPeriod String?
+  rentalInitialOdometer Float?
+  rentalInitialDate     DateTime?
+  rentalReturnOdometer  Float?
+  rentalReturnDate      DateTime?
+
+  // Owned details (ownershipType = AMAZON_OWNED)
+  purchasePrice    Float?
+  purchaseOdometer Float?
+  purchaseDate     DateTime?
+  soldPrice        Float?
+  soldOdometer     Float?
+  soldDate         DateTime?
+
+  // Last usage — set when a shift with this vehicle is completed
+  lastUsedAt           DateTime?
+  lastUsedByEmployeeId String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  dsp           Dsp      @relation(fields: [dspId], references: [id])
+  station       Station  @relation(fields: [stationId], references: [id])
+  stationVehicleType    StationVehicleType? @relation(fields: [stationVehicleTypeId], references: [id])
+  requiredQualification Qualification? @relation(fields: [requiredQualificationId], references: [id])
+
+  // Van affinity — employees assigned to this van
+  primaryDrivers   Employee[] @relation("PrimaryVanAffinity")
+  secondaryDrivers Employee[] @relation("SecondaryVanAffinity")
+
+  lastUsedByEmployee Employee?             @relation("VehicleLastUsedBy", fields: [lastUsedByEmployeeId], references: [id])
+  images                 VehicleImage[]
+  servicePeriods         VehicleServicePeriod[]
+  maintenanceRecords     VehicleMaintenanceRecord[]
+  scheduledMaintenances  ScheduledMaintenance[]
+  maintenanceChecklists  MaintenanceChecklist[]
+  shifts                 Shift[]               // day-of assignments
+  loadOutSubmissions     LoadOutSubmission[]
+
+  @@unique([dspId, vehicleId])
+}
+
+// VehicleImage — inspection / breakdown / other photos attached to a vehicle
+model VehicleImage {
+  id        String               @id @default(cuid())
+  vehicleId String
+  dspId     String
+  category  VehicleImageCategory
+  url       String
+
+  uploadedByEmployeeId String?
+  shiftId              String?
+  takenAt              DateTime?
+  notes                String?
+
+  createdAt DateTime @default(now())
+
+  vehicle    Vehicle   @relation(fields: [vehicleId], references: [id], onDelete: Cascade)
+  dsp        Dsp       @relation(fields: [dspId], references: [id])
+  uploadedBy Employee? @relation("VehicleImageUploader", fields: [uploadedByEmployeeId], references: [id])
+}
+
+// VehicleServicePeriod — one active-service window for a vehicle (start required, end nullable = still active)
+model VehicleServicePeriod {
+  id        String    @id @default(cuid())
+  vehicleId String
+  dspId     String
+  startDate DateTime
+  endDate   DateTime?
+  notes     String?
+  createdAt DateTime  @default(now())
+
+  vehicle Vehicle @relation(fields: [vehicleId], references: [id], onDelete: Cascade)
+  dsp     Dsp     @relation(fields: [dspId], references: [id])
+}
+
+// VehicleMaintenanceRecord — a service/repair event for a vehicle
+model VehicleMaintenanceRecord {
+  id            String              @id @default(cuid())
+  vehicleId     String
+  dspId         String
+  category      MaintenanceCategory
+  status        MaintenanceStatus   @default(OPEN)
+  description   String?
+  serviceDate   DateTime?
+  mileage       Float?
+  estimatedCost Float?
+  actualCost    Float?
+  vendorName    String?
+  vendorAddress String?
+  invoiceNumber String?
+  attachmentUrl String?
+  notes         String?
+  createdAt     DateTime            @default(now())
+  updatedAt     DateTime            @updatedAt
+
+  vehicle Vehicle @relation(fields: [vehicleId], references: [id], onDelete: Cascade)
+  dsp     Dsp     @relation(fields: [dspId], references: [id])
+}
+
+// ScheduledMaintenance — upcoming maintenance tasks for a vehicle
+model ScheduledMaintenance {
+  id          String    @id @default(cuid())
+  dspId       String
+  vehicleId   String
+  title       String
+  description String?
+  scheduledAt DateTime
+  isCompleted Boolean   @default(false)
+  completedAt DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  dsp     Dsp     @relation(fields: [dspId], references: [id])
+  vehicle Vehicle @relation(fields: [vehicleId], references: [id], onDelete: Cascade)
+}
+
+// MaintenanceChecklist — per-vehicle checklists with checkable items
+model MaintenanceChecklist {
+  id        String   @id @default(cuid())
+  dspId     String
+  vehicleId String
+  title     String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  dsp     Dsp     @relation(fields: [dspId], references: [id])
+  vehicle Vehicle @relation(fields: [vehicleId], references: [id], onDelete: Cascade)
+  items   MaintenanceChecklistItem[]
+}
+
+model MaintenanceChecklistItem {
+  id          String  @id @default(cuid())
+  checklistId String
+  label       String
+  isChecked   Boolean @default(false)
+  sortOrder   Int     @default(0)
+
+  checklist MaintenanceChecklist @relation(fields: [checklistId], references: [id], onDelete: Cascade)
+}
+
+// Device — mobile phone used by a driver
+model Device {
+  id        String @id @default(cuid())
+  dspId     String
+  stationId String?
+
+  // Core
+  deviceName    String
+  phoneNumber   String?
+  status        DeviceStatus    @default(ACTIVE)
+  condition     DeviceCondition?
+
+  // Technical
+  carrier      String?
+  username     String?
+  platform     String?
+  manufacturer String?
+  model        String?
+  osVersion    String?
+  mdmClient    Boolean @default(false)
+
+  // Identifiers
+  assetTagId   String?
+  serialNumber String? @unique
+  uid          String?
+  imei         String?
+
+  // Assignment flags
+  isPersonalDevice Boolean @default(false)
+  canRunLoadOut    Boolean @default(false)
+  statusDate       DateTime?
+
+  // Current assignment
+  assignedEmployeeId String?
+  lastSeenAt         DateTime?
+
+  // "Used On" — set when a shift with this device is completed
+  lastUsedAt           DateTime?
+  lastUsedByEmployeeId String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  dsp                Dsp       @relation(fields: [dspId], references: [id])
+  station            Station?  @relation(fields: [stationId], references: [id])
+  assignedEmployee   Employee? @relation(fields: [assignedEmployeeId], references: [id])
+  lastUsedByEmployee Employee? @relation("DeviceLastUsedBy", fields: [lastUsedByEmployeeId], references: [id])
+  shiftDevices       ShiftDevice[]
+}
+
+// ActivityLog — polymorphic audit trail for Device and Employee events
+model ActivityLog {
+  id         String             @id @default(cuid())
+  dspId      String
+  entityType ActivityEntityType
+  entityId   String
+
+  action             String   // e.g. "Device created", "Condition changed: GOOD → CRACKED_SCREEN"
+  metadata           Json?
+  performedByClerkId String?
+  performedByName    String?
+
+  createdAt DateTime @default(now())
+
+  dsp Dsp @relation(fields: [dspId], references: [id])
+}
+
+// Skill — driver qualification or vehicle requirement (defined per DSP)
+model Skill {
+  id    String @id @default(cuid())
+  dspId String
+  name  String // e.g. "Driver", "Step Van Driver", "CDV", "Class B License"
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  dsp Dsp @relation(fields: [dspId], references: [id])
+
+  employeeSkills EmployeeSkill[]
+  shiftTypes     ShiftType[]
+
+  @@unique([dspId, name])
+}
+
+// EmployeeSkill — junction table: which skills an employee has
+model EmployeeSkill {
+  employeeId String
+  skillId    String
+
+  employee Employee @relation(fields: [employeeId], references: [id])
+  skill    Skill    @relation(fields: [skillId], references: [id])
+
+  @@id([employeeId, skillId])
+}
+
+// VehicleGroup — named grouping of allowed vehicle types per station
+// e.g. "Standard Fleet" = [CARGO_VAN, STEP_VAN], "Heavy Duty" = [STEP_VAN, CDV]
+// Used on ShiftType to express which van types can fulfil that shift
+model VehicleGroup {
+  id        String @id @default(cuid())
+  stationId String
+  name      String // e.g. "Standard Fleet", "CDV Pool", "Heavy Duty"
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  station      Station            @relation(fields: [stationId], references: [id])
+  vehicleTypes VehicleGroupType[]
+  shiftTypes   ShiftType[]
+
+  @@unique([stationId, name])
+}
+
+// VehicleGroupType — junction: which station vehicle types are allowed in a group
+model VehicleGroupType {
+  vehicleGroupId       String
+  stationVehicleTypeId String
+
+  vehicleGroup       VehicleGroup       @relation(fields: [vehicleGroupId], references: [id], onDelete: Cascade)
+  stationVehicleType StationVehicleType @relation(fields: [stationVehicleTypeId], references: [id], onDelete: Cascade)
+
+  @@id([vehicleGroupId, stationVehicleTypeId])
+}
+
+// StationVehicleType — user-managed list of vehicle types per station
+model StationVehicleType {
+  id        String   @id @default(cuid())
+  stationId String
+  name      String
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  station           Station           @relation(fields: [stationId], references: [id], onDelete: Cascade)
+  vehicleGroupTypes VehicleGroupType[]
+  vehicles          Vehicle[]
+
+  @@unique([stationId, name])
+}
+
+// ShiftType — scheduling template (start/end time, skill, vehicle group)
+model ShiftType {
+  id              String  @id @default(cuid())
+  stationId       String
+  vehicleGroupId  String? // which vehicle types can fulfil this shift
+  requiredSkillId String?
+  qualificationId String? // station-level qualification required for this shift
+  invoiceTypeId   String? // invoice type this shift maps to
+
+  name         String
+  color        String? // hex color for scheduler display
+  startTime    String? // "HH:MM" 24h
+  endTime      String? // "HH:MM" 24h
+  breakMinutes    Int?
+  durationMinutes Int?    // shift length in minutes (30 = 0.5 hr, 600 = 10 hr)
+  notes           String?
+  countAsDriver Boolean @default(true)  // count toward RC in week view
+  isSystemType  Boolean @default(false) // system types can be edited but not deleted
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  station       Station        @relation(fields: [stationId], references: [id])
+  vehicleGroup  VehicleGroup?  @relation(fields: [vehicleGroupId], references: [id])
+  requiredSkill Skill?         @relation(fields: [requiredSkillId], references: [id])
+  qualification Qualification? @relation(fields: [qualificationId], references: [id])
+  invoiceType   InvoiceType?   @relation(fields: [invoiceTypeId], references: [id])
+  shifts        Shift[]
+  routeCommitments RouteCommitment[]
+
+  @@unique([stationId, name])
+}
+
+// Shift — a single scheduled instance: one driver, one day, one station
+model Shift {
+  id          String      @id @default(cuid())
+  dspId       String
+  stationId   String
+  employeeId  String
+  shiftTypeId String?     // null = manual (ad-hoc) shift
+  vehicleId   String?     // assigned day-of; determines actual vehicle type for RC tracking
+
+  date      String      // "YYYY-MM-DD" stored as local date
+  startTime String?     // "HH:MM" 24h — overrides shiftType.startTime if set
+  endTime   String?     // "HH:MM" 24h — overrides shiftType.endTime if set
+  notes     String?
+  status    ShiftStatus @default(DRAFT)
+
+  // Work block extras
+  routes        String[]  // free-text route tags (e.g. "Route 301")
+  isTrainer     Boolean   @default(false)
+  isLightDuty   Boolean   @default(false)
+  isRescue      Boolean   @default(false)  // this shift is a rescue assignment
+  refusedRescue Boolean   @default(false)
+  rescuedShiftId String?                  // the shift this one is rescuing
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  dsp       Dsp        @relation(fields: [dspId], references: [id])
+  station   Station    @relation(fields: [stationId], references: [id])
+  employee  Employee   @relation(fields: [employeeId], references: [id])
+  shiftType ShiftType? @relation(fields: [shiftTypeId], references: [id])
+  vehicle   Vehicle?   @relation(fields: [vehicleId], references: [id])
+  devices          ShiftDevice[]
+  logs             ShiftLog[]
+  loadOutSubmission LoadOutSubmission?
+}
+
+// ShiftDevice — junction: devices assigned to a work block
+model ShiftDevice {
+  id       String   @id @default(cuid())
+  shiftId  String
+  deviceId String
+  addedAt  DateTime @default(now())
+
+  shift  Shift  @relation(fields: [shiftId], references: [id], onDelete: Cascade)
+  device Device @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+
+  @@unique([shiftId, deviceId])
+}
+
+// ShiftLog — per-shift audit trail (timeline of all changes to a work block)
+model ShiftLog {
+  id                 String   @id @default(cuid())
+  shiftId            String
+  dspId              String
+  action             String
+  performedByClerkId String?
+  performedByName    String?
+  createdAt          DateTime @default(now())
+
+  shift Shift @relation(fields: [shiftId], references: [id], onDelete: Cascade)
+  dsp   Dsp   @relation(fields: [dspId], references: [id])
+}
+
+// RouteCommitment — planned route counts per shift type per week day
+model RouteCommitment {
+  id          String @id @default(cuid())
+  dspId       String
+  stationId   String
+  shiftTypeId String
+  weekStart   String // "YYYY-MM-DD" — always the Sunday of the week
+
+  sun Int @default(0)
+  mon Int @default(0)
+  tue Int @default(0)
+  wed Int @default(0)
+  thu Int @default(0)
+  fri Int @default(0)
+  sat Int @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  dsp       Dsp       @relation(fields: [dspId],       references: [id])
+  station   Station   @relation(fields: [stationId],   references: [id])
+  shiftType ShiftType @relation(fields: [shiftTypeId], references: [id])
+
+  @@unique([stationId, shiftTypeId, weekStart])
+}
+
+// Availability — driver-submitted availability for a given week
+// Created from driver dashboard; dispatcher reads this to build the shift schedule
+model Availability {
+  id         String @id @default(cuid())
+  dspId      String
+  stationId  String
+  employeeId String
+
+  weekStartDate String  // "YYYY-MM-DD" — the Sunday of the target week
+  notes         String?
+  status        AvailabilityStatus @default(SUBMITTED)
+
+  submittedAt DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  slots    AvailabilitySlot[]
+  dsp      Dsp      @relation(fields: [dspId], references: [id])
+  station  Station  @relation(fields: [stationId], references: [id])
+  employee Employee @relation(fields: [employeeId], references: [id])
+
+  @@unique([employeeId, weekStartDate]) // one submission per driver per week
+}
+
+// AvailabilitySlot — one entry per day a driver is available within an Availability week
+model AvailabilitySlot {
+  id             String @id @default(cuid())
+  availabilityId String
+  date           String  // "YYYY-MM-DD"
+  startTime      String? // "HH:MM" 24h — null = unspecified
+  endTime        String? // "HH:MM" 24h
+
+  availability Availability @relation(fields: [availabilityId], references: [id], onDelete: Cascade)
+
+  @@unique([availabilityId, date])
+}
+
+// Qualification — DSP-global certifications/requirements (e.g. CDV Driver, Step Van)
+model Qualification {
+  id    String @id @default(cuid())
+  dspId String
+  name  String
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  dsp                    Dsp                    @relation(fields: [dspId], references: [id])
+  vehicles               Vehicle[]
+  shiftTypes             ShiftType[]
+  stationQualifications  StationQualification[]
+  employeeQualifications EmployeeQualification[]
+
+  @@unique([dspId, name])
+}
+
+// StationQualification — per-station rate override for a DSP-level qualification
+model StationQualification {
+  stationId       String
+  qualificationId String
+  rate            Float? // pay rate in station currency; null = not set
+
+  station       Station       @relation(fields: [stationId], references: [id])
+  qualification Qualification @relation(fields: [qualificationId], references: [id])
+
+  @@id([stationId, qualificationId])
+}
+
+// RateCard — compensation rate definition for a station
+model RateCard {
+  id             String       @id @default(cuid())
+  stationId      String
+  name           String
+  criteria       RateCriteria
+  effectiveRate  Float
+  cumulativeRate Float?
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  station      Station       @relation(fields: [stationId], references: [id])
+  invoiceTypes InvoiceType[]
+
+  @@unique([stationId, name])
+}
+
+// InvoiceType — invoice category definition; snapshots the rate card at creation
+model InvoiceType {
+  id            String          @id @default(cuid())
+  stationId     String
+  name          String
+  category      InvoiceCategory
+  billableHours Float         // 0 = flat fee; 0.5–12.0 in 0.5-hr steps
+  rateCardId    String?
+  rateSnapshot  Json?           // frozen copy of { name, criteria, effectiveRate, cumulativeRate }
+  createdAt     DateTime        @default(now())
+  updatedAt     DateTime        @updatedAt
+
+  station    Station     @relation(fields: [stationId], references: [id])
+  rateCard   RateCard?   @relation(fields: [rateCardId], references: [id])
+  shiftTypes ShiftType[]
+
+  @@unique([stationId, name])
+}
+
+// EmergencyContact — up to 3 emergency contacts per employee
+model EmergencyContact {
+  id           String  @id @default(cuid())
+  employeeId   String
+  name         String
+  phone        String?
+  relationship String?
+  sortOrder    Int     @default(0)
+
+  employee Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+}
+
+// EmployeeQualification — per-employee qualification + optional rate override
+model EmployeeQualification {
+  employeeId      String
+  qualificationId String
+  rate            Float? // per-employee rate override
+
+  employee      Employee      @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  qualification Qualification @relation(fields: [qualificationId], references: [id])
+
+  @@id([employeeId, qualificationId])
+}
+
+// ─── Load Out ─────────────────────────────────────────────────────────────────
+
+// LoadOutTemplate — one per station; defines sections + tasks for pre-shift checklist
+model LoadOutTemplate {
+  id           String   @id @default(cuid())
+  stationId    String   @unique
+  dspId        String
+  introduction String?  // shown at top of driver form (editable by admin)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  station  Station          @relation(fields: [stationId], references: [id], onDelete: Cascade)
+  dsp      Dsp              @relation(fields: [dspId], references: [id])
+  sections LoadOutSection[]
+}
+
+// LoadOutSection — a named group of tasks (e.g. "Pre-Inspection Van")
+model LoadOutSection {
+  id         String @id @default(cuid())
+  templateId String
+  title      String
+  sortOrder  Int    @default(0)
+
+  template LoadOutTemplate @relation(fields: [templateId], references: [id], onDelete: Cascade)
+  tasks    LoadOutTask[]
+}
+
+// LoadOutTask — a single question / action step within a section
+model LoadOutTask {
+  id          String          @id @default(cuid())
+  sectionId   String
+  type        LoadOutTaskType
+  label       String          // question text shown to driver (max 500 chars)
+  description String?         // optional hint or longer instruction
+  required    Boolean         @default(true)
+  sortOrder   Int             @default(0)
+  // metadata examples:
+  //   { "updatesFuelPercent": true }  → writes numericValue to Vehicle.currentFuelPercent
+  //   { "updatesMileage": true }      → writes numericValue to Vehicle.currentMileage
+  //   { "verifyVin": true }           → cross-checks textValue against shift.vehicle.vin
+  metadata    Json?
+
+  section LoadOutSection @relation(fields: [sectionId], references: [id], onDelete: Cascade)
+  answers LoadOutAnswer[]
+}
+
+// LoadOutSubmission — one completed loadout per shift
+model LoadOutSubmission {
+  id          String   @id @default(cuid())
+  dspId       String
+  stationId   String
+  shiftId     String   @unique // one submission per shift
+  vehicleId   String?
+  employeeId  String
+  completedAt DateTime
+  createdAt   DateTime @default(now())
+
+  shift   Shift    @relation(fields: [shiftId], references: [id])
+  vehicle Vehicle? @relation(fields: [vehicleId], references: [id])
+  answers LoadOutAnswer[]
+}
+
+// LoadOutAnswer — driver's answer for one task within a submission
+model LoadOutAnswer {
+  id           String   @id @default(cuid())
+  submissionId String
+  taskId       String
+  boolValue    Boolean? // YES_NO answers
+  textValue    String?  // TEXT and VIN_SCAN (the decoded VIN string)
+  numericValue Float?   // NUMERIC answers
+  photoUrls    String[] // PHOTO answers (array of file paths)
+  // metadata examples:
+  //   { "vinVerified": true, "vinMismatch": false }
+  //   { "updatedVehicleField": "currentFuelPercent" }
+  metadata     Json?
+  createdAt    DateTime @default(now())
+
+  submission LoadOutSubmission @relation(fields: [submissionId], references: [id], onDelete: Cascade)
+  task       LoadOutTask       @relation(fields: [taskId], references: [id])
+}
+
+// SuperAdmin — platform-level user who manages the SaaS product itself
+// Identified in Clerk via publicMetadata.role = "SUPER_ADMIN"
+// Has no DSP context — completely separate from Employee
+model SuperAdmin {
+  id          String         @id @default(cuid())
+  clerkUserId String         @unique
+  name        String
+  email       String         @unique
+  role        SuperAdminRole @default(DSP_SUPPORT)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+// ─── Chat ────────────────────────────────────────────────────────────────────
+
+// Conversation — a chat thread (direct 1:1 or named group)
+model Conversation {
+  id                  String           @id @default(cuid())
+  dspId               String
+  type                ConversationType
+  name                String?          // display name — GROUP only; null for DIRECT
+  createdByEmployeeId String?          // null if creator was later deleted
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt      // bumped on every new message for sorting
+
+  dsp          Dsp                       @relation(fields: [dspId], references: [id])
+  createdBy    Employee?                 @relation("ConversationCreatedBy", fields: [createdByEmployeeId], references: [id])
+  participants ConversationParticipant[]
+  messages     Message[]
+
+  @@index([dspId, updatedAt])        // listConversations: ORDER BY updatedAt DESC within a DSP
+  @@index([dspId, type])             // createConversation DIRECT dedup: WHERE dspId + type = DIRECT
+}
+
+// ConversationParticipant — membership record for a conversation
+model ConversationParticipant {
+  id             String    @id @default(cuid())
+  conversationId String
+  employeeId     String
+  joinedAt       DateTime  @default(now())
+  leftAt         DateTime? // null = active; non-null = removed/left (soft removal)
+  lastReadAt     DateTime? // used to compute unread count: count messages where sentAt > lastReadAt
+
+  conversation Conversation @relation(fields: [conversationId], references: [id])
+  employee     Employee     @relation(fields: [employeeId], references: [id])
+
+  @@unique([conversationId, employeeId])
+  @@index([employeeId, leftAt])      // socket connect: find all active participations for an employee
+}
+
+// Message — a single chat message within a conversation
+model Message {
+  id             String    @id @default(cuid())
+  conversationId String
+  senderId       String
+  body           String    // plain text, max 4000 chars
+  sentAt         DateTime  @default(now()) // server-side timestamp — authoritative ordering
+  deletedAt      DateTime? // soft delete: set instead of destroying row; API returns body: null
+
+  conversation Conversation  @relation(fields: [conversationId], references: [id])
+  sender       Employee      @relation(fields: [senderId], references: [id])
+  readReceipts MessageRead[]
+
+  @@index([conversationId, sentAt])  // listMessages pagination, unread count, conv:read handler
+  @@index([conversationId, deletedAt]) // filtered message fetches (WHERE deletedAt IS NULL)
+}
+
+// MessageRead — tracks which employees have read which messages (for ✓✓ receipts)
+model MessageRead {
+  messageId        String
+  readByEmployeeId String
+  readAt           DateTime @default(now())
+
+  message Message  @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  readBy  Employee @relation(fields: [readByEmployeeId], references: [id], onDelete: Cascade)
+
+  @@id([messageId, readByEmployeeId])
+  @@index([readByEmployeeId])        // lookup read receipts by employee
+}
+
+// ─── Scorecards ───────────────────────────────────────────────────────────────
+
+// ScorecardWeek — one processed week of Cortex scorecard data for a DSP
+model ScorecardWeek {
+  id           String   @id @default(cuid())
+  dspId        String
+  weekNumber   Int      // ISO week number (1–53)
+  year         Int
+  weekStart    DateTime
+  weekEnd      DateTime
+  totalDrivers Int      @default(0)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  dsp           Dsp              @relation(fields: [dspId], references: [id], onDelete: Cascade)
+  entries       ScorecardEntry[]
+  announcements Announcement[]
+
+  @@unique([dspId, weekNumber, year])
+  @@index([dspId])
+}
+
+// ScorecardEntry — one driver's metrics for a given ScorecardWeek
+model ScorecardEntry {
+  id            String   @id @default(cuid())
+  dspId         String
+  weekId        String
+  employeeId    String?  // FK to Employee (matched via transporterId during save)
+  transporterId String   // Raw Amazon transporter ID from parsed docs
+  firstName     String?
+  lastName      String?
+  metrics       Json     // all extracted metrics as a JSON blob
+  rank          Int?     // computed rank within the week (1 = best)
+  score         Float?   // 0–100 linear scale (rank 1 = 100, last = 0)
+  rankedCount   Int?     // total ranked drivers in this week
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  week     ScorecardWeek @relation(fields: [weekId], references: [id], onDelete: Cascade)
+  employee Employee?     @relation(fields: [employeeId], references: [id], onDelete: SetNull)
+
+  @@unique([weekId, transporterId])
+  @@index([dspId])
+  @@index([weekId])
+  @@index([employeeId])
+}
+
+// ─── Coaching ─────────────────────────────────────────────────────────────────
+
+// CoachingRule — one coaching configuration per metric per DSP (station-level default)
+model CoachingRule {
+  id           String   @id @default(cuid())
+  dspId        String
+  metricKey    String   // e.g. "ficoScore", "seatbeltOffRate"
+  category     String   // e.g. "Safety", "Delivery", "POD"
+  label        String   // e.g. "FICO Score"
+  goal         Float?   // target value (e.g. 800)
+  trigger      Float?   // threshold that activates coaching (e.g. 710)
+  enabled      Boolean  @default(false)
+  coachingText String?  // long-form description of the metric
+  unit         String?  // display unit e.g. "%", "events", "points", "DPMO"
+  sortOrder    Int      @default(0)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  dsp       Dsp                      @relation(fields: [dspId], references: [id], onDelete: Cascade)
+  tips      CoachingTip[]
+  overrides CoachingDriverOverride[]
+
+  @@unique([dspId, metricKey])
+  @@index([dspId])
+}
+
+// CoachingTip — range-based coaching message (multiple per rule)
+model CoachingTip {
+  id        String @id @default(cuid())
+  ruleId    String
+  rangeMin  Float? // lower bound of range (null = no lower bound)
+  rangeMax  Float? // upper bound of range (null = no upper bound)
+  message   String // tip text
+  severity  String // "GREEN" | "YELLOW" | "ORANGE" | "RED"
+  sortOrder Int    @default(0)
+
+  rule CoachingRule @relation(fields: [ruleId], references: [id], onDelete: Cascade)
+
+  @@index([ruleId])
+}
+
+// CoachingDriverOverride — per-driver goal/trigger override (overrides station default)
+model CoachingDriverOverride {
+  id            String   @id @default(cuid())
+  ruleId        String
+  transporterId String   // matches ScorecardEntry.transporterId
+  goal          Float?   // overrides station goal
+  trigger       Float?   // overrides station trigger
+  enabled       Boolean? // overrides station toggle (null = use station default)
+
+  rule CoachingRule @relation(fields: [ruleId], references: [id], onDelete: Cascade)
+
+  @@unique([ruleId, transporterId])
+  @@index([ruleId])
+  @@index([transporterId])
+}
+
+// ─── Announcements ────────────────────────────────────────────────────────────
+
+// Announcement — coaching messages delivered to drivers
+model Announcement {
+  id            String    @id @default(cuid())
+  dspId         String
+  transporterId String
+  weekId        String?   // FK to ScorecardWeek (nullable for non-scorecard announcements)
+  metricKey     String?   // which metric triggered this
+  metricValue   Float?    // actual driver value
+  title         String    // e.g. "FICO Score: 650"
+  message       String    // the coaching tip text
+  severity      String    // "GREEN" | "ORANGE" | "RED"
+  readAt        DateTime?
+  createdAt     DateTime  @default(now())
+
+  dsp  Dsp            @relation(fields: [dspId], references: [id], onDelete: Cascade)
+  week ScorecardWeek? @relation(fields: [weekId], references: [id], onDelete: SetNull)
+
+  @@index([dspId, transporterId])
+  @@index([transporterId, readAt])
+  @@index([weekId])
+}
+
+// ─── Notification System ──────────────────────────────────────────────────────
+
+// NotificationConfig — per-station, per-type notification settings
+model NotificationConfig {
+  id        String           @id @default(cuid())
+  stationId String
+  type      NotificationType
+
+  // Driver-facing
+  driverEnabled      Boolean              @default(false)
+  driverReminderDays Int[]                @default([])
+  driverChannels     NotificationChannel[] @default([])
+
+  // DSP/manager-facing
+  dspEnabled      Boolean              @default(false)
+  dspReminderDays Int[]                @default([])
+  dspChannels     NotificationChannel[] @default([])
+
+  station   Station  @relation(fields: [stationId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([stationId, type])
+}
+
+// Notification — general-purpose in-app notifications (distinct from Announcement)
+model Notification {
+  id         String           @id @default(cuid())
+  dspId      String
+  employeeId String
+  type       NotificationType
+  title      String
+  message    String
+  severity   String           // "INFO" | "WARNING" | "CRITICAL"
+  metadata   Json?
+  readAt     DateTime?
+  createdAt  DateTime         @default(now())
+
+  dsp      Dsp      @relation(fields: [dspId], references: [id], onDelete: Cascade)
+  employee Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+
+  @@index([employeeId, readAt])
+  @@index([dspId, type])
+}
+
+// NotificationLog — deduplication + audit trail for sent notifications
+model NotificationLog {
+  id           String              @id @default(cuid())
+  dspId        String
+  type         NotificationType
+  channel      NotificationChannel
+  recipientId  String
+  subjectId    String
+  triggerDate  String              // "YYYY-MM-DD"
+  reminderDay  Int                 // 30, 15, 5, or 0 (expired)
+  sentAt       DateTime            @default(now())
+  success      Boolean             @default(true)
+  errorMessage String?
+
+  dsp Dsp @relation(fields: [dspId], references: [id], onDelete: Cascade)
+
+  @@unique([type, channel, recipientId, subjectId, reminderDay, triggerDate])
+  @@index([dspId, type, triggerDate])
+}
