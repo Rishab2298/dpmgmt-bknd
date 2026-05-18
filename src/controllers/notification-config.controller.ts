@@ -39,7 +39,7 @@ export async function getNotificationConfig(req: Request, res: Response) {
 
 // ─── PUT /api/stations/:id/notification-config/:type ─────────────────────────
 
-const VALID_TYPES: NotificationType[] = ['LICENSE_EXPIRY']
+const VALID_TYPES: NotificationType[] = ['LICENSE_EXPIRY', 'VEHICLE_MAINTENANCE', 'SHIFT_REMINDER']
 
 const upsertConfigSchema = z.object({
   driverEnabled:      z.boolean(),
@@ -48,6 +48,13 @@ const upsertConfigSchema = z.object({
   dspEnabled:         z.boolean(),
   dspReminderDays:    z.array(z.number().int().min(1).max(365)).max(1),
   dspChannels:        z.array(z.enum(['EMAIL', 'SMS', 'IN_APP', 'MOBILE_PUSH'])),
+})
+
+const shiftReminderSchema = z.object({
+  driverEnabled:   z.boolean(),
+  driverChannels:  z.array(z.enum(['EMAIL', 'SMS', 'IN_APP', 'MOBILE_PUSH'])),
+  reminderHours:   z.array(z.number().int().min(1).max(72)).max(5),
+  messageTemplate: z.string().max(1000).optional().nullable(),
 })
 
 export async function upsertNotificationConfig(req: Request, res: Response) {
@@ -60,6 +67,38 @@ export async function upsertNotificationConfig(req: Request, res: Response) {
   const type = req.params.type as NotificationType
   if (!VALID_TYPES.includes(type)) {
     res.status(400).json({ message: `Invalid notification type: ${type}` })
+    return
+  }
+
+  if (type === 'SHIFT_REMINDER') {
+    const parsed = shiftReminderSchema.safeParse(req.body)
+    if (!parsed.success) {
+      res.status(400).json({ message: parsed.error.issues[0].message })
+      return
+    }
+    const data = parsed.data
+    const config = await prisma.notificationConfig.upsert({
+      where: { stationId_type: { stationId: station.id, type } },
+      create: {
+        stationId: station.id,
+        type,
+        driverEnabled:      data.driverEnabled,
+        driverReminderDays: [],
+        driverChannels:     data.driverChannels,
+        dspEnabled:         false,
+        dspReminderDays:    [],
+        dspChannels:        [],
+        reminderHours:      data.reminderHours,
+        messageTemplate:    data.messageTemplate ?? null,
+      },
+      update: {
+        driverEnabled:      data.driverEnabled,
+        driverChannels:     data.driverChannels,
+        reminderHours:      data.reminderHours,
+        messageTemplate:    data.messageTemplate ?? null,
+      },
+    })
+    res.json(config)
     return
   }
 

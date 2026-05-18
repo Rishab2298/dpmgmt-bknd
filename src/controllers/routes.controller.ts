@@ -12,11 +12,15 @@ async function getCallerEmployee(userId: string) {
   })
 }
 
-/** Normalise weekStart to the Sunday of that week (YYYY-MM-DD) */
+/** Normalise weekStart to the Sunday of that week (YYYY-MM-DD).
+ *  Uses noon to avoid UTC-offset issues where midnight local ≠ midnight UTC. */
 function toWeekSunday(dateStr: string): string {
-  const d = new Date(dateStr + 'T00:00:00')
+  const d = new Date(dateStr + 'T12:00:00')
   d.setDate(d.getDate() - d.getDay())
-  return d.toISOString().slice(0, 10)
+  const y = d.getFullYear()
+  const m = String(d.getMonth() + 1).padStart(2, '0')
+  const day = String(d.getDate()).padStart(2, '0')
+  return `${y}-${m}-${day}`
 }
 
 // ─── Zod schemas ──────────────────────────────────────────────────────────────

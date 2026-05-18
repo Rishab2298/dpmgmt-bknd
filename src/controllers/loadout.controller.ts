@@ -30,7 +30,7 @@ export const photoUploadMiddleware = multer({
 async function resolveEmployee(userId: string) {
   return prisma.employee.findUnique({
     where: { clerkUserId: userId },
-    select: { id: true, dspId: true, permissionLevel: true, legalFirstName: true, legalLastName: true },
+    select: { id: true, dspId: true, permissionLevel: true, legalFirstName: true, legalLastName: true, primaryStation: { select: { timezone: true } } },
   })
 }
 
@@ -141,7 +141,58 @@ export async function getLoadOutTemplate(req: Request, res: Response) {
 
   if (!template) {
     template = await prisma.loadOutTemplate.create({
-      data: { stationId, dspId: ctx.dspId },
+      data: {
+        stationId,
+        dspId: ctx.dspId,
+        sections: {
+          create: [
+            {
+              title: 'Getting Started',
+              sortOrder: 0,
+              tasks: {
+                create: [
+                  {
+                    type: 'YES_NO' as LoadOutTaskType,
+                    label: 'Have you clocked in to ADP today?',
+                    required: true,
+                    sortOrder: 0,
+                  },
+                  {
+                    type: 'VIN_SCAN' as LoadOutTaskType,
+                    label: 'Scan your vehicle VIN',
+                    description: 'Scan the QR code on your vehicle to verify the VIN.',
+                    required: true,
+                    sortOrder: 1,
+                    metadata: { verifyVin: true },
+                  },
+                  {
+                    type: 'YES_NO' as LoadOutTaskType,
+                    label: 'If driving a non-branded van, have you installed the eMentor app?',
+                    required: true,
+                    sortOrder: 2,
+                  },
+                  {
+                    type: 'PHOTO' as LoadOutTaskType,
+                    label: 'Take a clear photo of the interior dash of your van',
+                    description:
+                      'Stand in the middle interior sliding door if possible. Show the entire dash including windshield and Netradyne camera. Make sure the van is on to reflect the status of the camera.',
+                    required: true,
+                    sortOrder: 3,
+                  },
+                ],
+              },
+            },
+            {
+              title: 'Pre-Inspection Vehicle',
+              sortOrder: 1,
+            },
+            {
+              title: 'Station',
+              sortOrder: 2,
+            },
+          ],
+        },
+      },
       include: TEMPLATE_INCLUDE,
     })
   }
@@ -404,24 +455,49 @@ export async function getDriverLoadOut(req: Request, res: Response) {
   const emp = await resolveEmployee(userId!)
   if (!emp?.dspId) { res.status(403).json({ message: 'No employee record found' }); return }
 
-  // Find today's (or yesterday's) shift — yesterday included as a 1-day timezone buffer
-  // so server UTC date never causes a mismatch for DSPs in positive UTC offsets.
-  // We prefer today over yesterday via orderBy date DESC.
-  const today     = new Date().toLocaleDateString('en-CA') // "YYYY-MM-DD"
-  const yesterday = new Date(Date.now() - 86_400_000).toLocaleDateString('en-CA')
-  const shift = await prisma.shift.findFirst({
+  // Find the shift the driver should see right now.
+  // We look at today + yesterday (for overnight shifts that started yesterday and end today).
+  // Use the driver's primary station timezone for accurate "today/yesterday" calculation.
+  const tz = emp.primaryStation?.timezone ?? 'America/New_York'
+  const now = new Date()
+  const today = new Intl.DateTimeFormat('en-CA', { timeZone: tz }).format(now)
+  const yesterdayDate = new Date(now.getTime() - 86_400_000)
+  const yesterday = new Intl.DateTimeFormat('en-CA', { timeZone: tz }).format(yesterdayDate)
+  const currentTime = new Intl.DateTimeFormat('en-GB', { timeZone: tz, hour: '2-digit', minute: '2-digit', hour12: false }).format(now)
+
+  const shiftInclude = {
+    vehicle: { select: { id: true, vin: true, licensePlate: true, make: true, model: true, year: true } },
+    shiftType: { select: { name: true, startTime: true, endTime: true } },
+    loadOutSubmission: { select: { id: true, completedAt: true } },
+  } as const
+
+  const candidates = await prisma.shift.findMany({
     where: {
       employeeId: emp.id,
       date: { in: [today, yesterday] },
       status: { in: ['PUBLISHED', 'CONFIRMED'] },
     },
-    orderBy: { date: 'desc' }, // prefer today if both exist
-    include: {
-      vehicle: { select: { id: true, vin: true, licensePlate: true, make: true, model: true, year: true } },
-      shiftType: { select: { name: true, startTime: true, endTime: true } },
-      loadOutSubmission: { select: { id: true, completedAt: true } },
-    },
+    include: shiftInclude,
   })
+
+  // Pick the right shift:
+  // 1. If yesterday's shift is an overnight shift still in progress, pick it
+  // 2. Otherwise pick today's shift
+  // 3. Fall back to yesterday's shift if no today shift exists
+  let shift = candidates.find((s) => s.date === today) ?? null
+  const yesterdayShift = candidates.find((s) => s.date === yesterday) ?? null
+
+  if (yesterdayShift) {
+    const endTime = yesterdayShift.endTime ?? yesterdayShift.shiftType?.endTime ?? null
+    const startTime = yesterdayShift.startTime ?? yesterdayShift.shiftType?.startTime ?? null
+    // Overnight shift: startTime > endTime (e.g., 21:00 start, 10:00 end)
+    // It's still active if current time < endTime
+    if (startTime && endTime && startTime > endTime && currentTime < endTime) {
+      shift = yesterdayShift
+    } else if (!shift) {
+      shift = yesterdayShift
+    }
+  }
 
   if (!shift) {
     res.json({ state: 'NO_SHIFT', shift: null, template: null, submission: null })
@@ -431,9 +507,9 @@ export async function getDriverLoadOut(req: Request, res: Response) {
   // Time gate — form only available once shift has started
   const effectiveStart = shift.startTime ?? shift.shiftType?.startTime ?? null
   if (effectiveStart) {
-    const now = new Date()
-    const currentTime = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`
-    if (currentTime < effectiveStart) {
+    // For overnight shifts (date = yesterday), they've already started — skip the gate
+    const isOvernightActive = shift.date === yesterday
+    if (!isOvernightActive && currentTime < effectiveStart) {
       res.json({ state: 'FUTURE', shift: { startTime: effectiveStart }, template: null, submission: null })
       return
     }
@@ -445,11 +521,17 @@ export async function getDriverLoadOut(req: Request, res: Response) {
     return
   }
 
-  // Fetch the station's loadout template
-  const template = await prisma.loadOutTemplate.findUnique({
-    where: { stationId: shift.stationId },
-    include: TEMPLATE_INCLUDE,
-  })
+  // Fetch the station's loadout template + safety reminders
+  const [template, stationData] = await Promise.all([
+    prisma.loadOutTemplate.findUnique({
+      where: { stationId: shift.stationId },
+      include: TEMPLATE_INCLUDE,
+    }),
+    prisma.station.findUnique({
+      where: { id: shift.stationId },
+      select: { safetyRemindersHtml: true },
+    }),
+  ])
 
   res.json({
     state: 'PENDING',
@@ -463,6 +545,7 @@ export async function getDriverLoadOut(req: Request, res: Response) {
     },
     template,
     submission: null,
+    safetyRemindersHtml: stationData?.safetyRemindersHtml ?? null,
   })
 }
 
@@ -489,19 +572,37 @@ export async function submitLoadOut(req: Request, res: Response) {
   const parsed = submitLoadOutSchema.safeParse(req.body)
   if (!parsed.success) { res.status(400).json({ message: parsed.error.errors[0].message }); return }
 
-  // Find today's active shift
-  const today = new Date().toLocaleDateString('en-CA')
-  const shift = await prisma.shift.findFirst({
+  // Find today's active shift (using station timezone, with overnight shift support)
+  const tz = emp.primaryStation?.timezone ?? 'America/New_York'
+  const now = new Date()
+  const today = new Intl.DateTimeFormat('en-CA', { timeZone: tz }).format(now)
+  const yesterday = new Intl.DateTimeFormat('en-CA', { timeZone: tz }).format(new Date(now.getTime() - 86_400_000))
+
+  const shiftInclude = {
+    vehicle: { select: { id: true, vin: true } },
+    loadOutSubmission: { select: { id: true } },
+    shiftType: { select: { startTime: true, endTime: true } },
+  } as const
+
+  const candidates = await prisma.shift.findMany({
     where: {
       employeeId: emp.id,
-      date: today,
+      date: { in: [today, yesterday] },
       status: { in: ['PUBLISHED', 'CONFIRMED'] },
     },
-    include: {
-      vehicle: { select: { id: true, vin: true } },
-      loadOutSubmission: { select: { id: true } },
-    },
+    include: shiftInclude,
   })
+
+  // Pick shift: active overnight from yesterday first, then today
+  let shift = candidates.find((s) => s.date === today) ?? null
+  const yesterdayShift = candidates.find((s) => s.date === yesterday) ?? null
+  if (yesterdayShift) {
+    const st = yesterdayShift.startTime ?? yesterdayShift.shiftType?.startTime ?? null
+    const et = yesterdayShift.endTime ?? yesterdayShift.shiftType?.endTime ?? null
+    const currentTime = new Intl.DateTimeFormat('en-GB', { timeZone: tz, hour: '2-digit', minute: '2-digit', hour12: false }).format(now)
+    if (st && et && st > et && currentTime < et) shift = yesterdayShift
+    else if (!shift) shift = yesterdayShift
+  }
 
   if (!shift) { res.status(400).json({ message: 'No active shift found for today' }); return }
   if (shift.loadOutSubmission) { res.status(409).json({ message: 'Load out already submitted for this shift' }); return }
@@ -527,7 +628,7 @@ export async function submitLoadOut(req: Request, res: Response) {
     }
   }
 
-  const now = new Date()
+  const submittedAt = new Date()
   const performerName = `${emp.legalFirstName} ${emp.legalLastName}`
 
   // Build answers with side-effect metadata
@@ -562,7 +663,7 @@ export async function submitLoadOut(req: Request, res: Response) {
         shiftId: shift.id,
         vehicleId: shift.vehicleId ?? null,
         employeeId: emp.id,
-        completedAt: now,
+        completedAt: submittedAt,
         answers: {
           create: enrichedAnswers.map((a) => ({
             taskId: a.taskId,
@@ -612,10 +713,39 @@ export async function submitLoadOut(req: Request, res: Response) {
               url,
               uploadedByEmployeeId: emp.id,
               shiftId: shift.id,
-              takenAt: now,
+              takenAt: submittedAt,
             },
           })
         }
+      }
+    }
+
+    // Create VehicleInspection records for VEHICLE_INSPECTION answers
+    if (shift.vehicleId) {
+      const inspectionAnswers = enrichedAnswers.filter((a) => {
+        const task = allTasks.find((t) => t.id === a.taskId)
+        return task?.type === 'VEHICLE_INSPECTION' && a.photoUrls.length > 0
+      })
+
+      for (const answer of inspectionAnswers) {
+        const angles = (answer.metadata as Record<string, unknown>)?.inspectionAngles as Record<string, string> | undefined
+        if (!angles) continue
+
+        await tx.vehicleInspection.create({
+          data: {
+            vehicleId: shift.vehicleId,
+            dspId: emp.dspId!,
+            shiftId: shift.id,
+            employeeId: emp.id,
+            source: 'LOAD_OUT',
+            completedAt: submittedAt,
+            images: {
+              create: Object.entries(angles)
+                .filter(([, url]) => !!url)
+                .map(([angle, url]) => ({ angle, url })),
+            },
+          },
+        })
       }
     }
 

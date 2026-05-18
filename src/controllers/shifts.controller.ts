@@ -13,6 +13,7 @@ async function resolveEmployee(userId: string) {
       legalFirstName: true,
       legalLastName: true,
       nickname: true,
+      primaryStation: { select: { timezone: true } },
     },
   })
 }
@@ -25,8 +26,9 @@ export async function getDriverShifts(req: Request, res: Response) {
   const emp = await resolveEmployee(userId!)
   if (!emp?.dspId) { res.status(403).json({ message: 'No employee record found' }); return }
 
-  // Include yesterday as a 1-day timezone buffer (server UTC vs local timezone edge cases)
-  const yesterday = new Date(Date.now() - 86_400_000).toLocaleDateString('en-CA')
+  // Use station timezone for accurate "yesterday" calculation
+  const tz = emp.primaryStation?.timezone ?? 'America/New_York'
+  const yesterday = new Intl.DateTimeFormat('en-CA', { timeZone: tz }).format(new Date(Date.now() - 86_400_000))
 
   const shifts = await prisma.shift.findMany({
     where: {

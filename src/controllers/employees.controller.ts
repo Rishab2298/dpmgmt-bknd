@@ -141,7 +141,8 @@ export async function listEmployees(req: Request, res: Response) {
     ]
   }
 
-  const today = new Date().toISOString().slice(0, 10)
+  const now = new Date()
+  const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`
   const [employees, total] = await Promise.all([
     prisma.employee.findMany({
       where,
@@ -898,7 +899,8 @@ export async function listEmployeeFutureShifts(req: Request, res: Response) {
   const employee = await resolveEmployeeOwnership(userId!, id)
   if (!employee) { res.status(404).json({ message: 'Employee not found' }); return }
 
-  const today = new Date().toISOString().slice(0, 10) // "YYYY-MM-DD"
+  const now = new Date()
+  const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`
 
   const shifts = await prisma.shift.findMany({
     where: {
@@ -975,7 +977,8 @@ export async function cancelShift(req: Request, res: Response) {
     res.status(404).json({ message: 'Shift not found' }); return
   }
 
-  const today = new Date().toISOString().slice(0, 10)
+  const now = new Date()
+  const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`
   if (shift.date < today) {
     res.status(400).json({ message: 'Cannot cancel a past shift' }); return
   }

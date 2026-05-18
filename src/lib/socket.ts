@@ -53,6 +53,7 @@ interface ServerToClientEvents {
   'conv:update': (payload: { conversationId: string; name: string }) => void
   'conv:removed': (payload: { conversationId: string }) => void
   'notification:new': (payload: { id: string; type: string; title: string; message: string; severity: string; createdAt: string }) => void
+  'broadcast:new': (payload: { instanceId: string; title: string; body: string; hasTemplate: boolean; sentAt: string }) => void
   'presence:online': (payload: { employeeId: string }) => void
   'presence:offline': (payload: { employeeId: string }) => void
   'presence:snapshot': (payload: { onlineIds: string[]; myEmployeeId: string }) => void

@@ -1,6 +1,6 @@
 import { Router } from 'express'
 import { requireAuth } from '../middleware/auth'
-import { getDspStations, getShiftTypes, getDspSkills } from '../controllers/dsp.controller'
+import { getDspStations, getShiftTypes, getDspSkills, getExtensionToken } from '../controllers/dsp.controller'
 import { createStation } from '../controllers/stations.controller'
 import {
   listDspQualifications,
@@ -32,6 +32,17 @@ import {
 } from '../controllers/maintenance.controller'
 import { listScheduled, createScheduled } from '../controllers/scheduled-maintenance.controller'
 import { listChecklists, createChecklist } from '../controllers/checklists.controller'
+import {
+  listDocuments,
+  createDocument,
+  documentUploadMiddleware,
+} from '../controllers/documents.controller'
+import {
+  listIncidents,
+  createIncident,
+  listIncidentCategories,
+  createIncidentCategory,
+} from '../controllers/incidents.controller'
 
 const router = Router()
 
@@ -39,6 +50,7 @@ router.use(requireAuth())
 
 router.get('/stations', getDspStations)
 router.post('/stations', createStation)
+router.post('/extension-token', getExtensionToken)
 router.get('/shift-types', getShiftTypes)
 router.get('/skills', getDspSkills)
 
@@ -67,5 +79,13 @@ router.post('/scheduled-maintenance', createScheduled)
 
 router.get('/maintenance-checklists', listChecklists)
 router.post('/maintenance-checklists', createChecklist)
+
+router.get('/documents', listDocuments)
+router.post('/documents', documentUploadMiddleware, createDocument)
+
+router.get('/incidents', listIncidents)
+router.post('/incidents', createIncident)
+router.get('/incident-categories', listIncidentCategories)
+router.post('/incident-categories', createIncidentCategory)
 
 export default router

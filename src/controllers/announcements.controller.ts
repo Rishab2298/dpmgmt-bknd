@@ -7,7 +7,7 @@ import { prisma } from '../lib/prisma'
 async function resolveEmployee(userId: string) {
   return prisma.employee.findUnique({
     where: { clerkUserId: userId },
-    select: { transporterId: true, dspId: true },
+    select: { id: true, transporterId: true, dspId: true },
   })
 }
 
@@ -87,17 +87,24 @@ export async function getUnreadCount(req: Request, res: Response) {
   if (!userId) { res.status(401).json({ message: 'Unauthorized' }); return }
 
   const employee = await resolveEmployee(userId)
-  if (!employee || !employee.transporterId || !employee.dspId) {
+  if (!employee || !employee.dspId) {
     res.json({ count: 0 }); return
   }
 
-  const count = await prisma.announcement.count({
-    where: {
-      transporterId: { equals: employee.transporterId, mode: 'insensitive' },
-      dspId: employee.dspId,
-      readAt: null,
-    },
-  })
+  const [coachingCount, broadcastCount] = await Promise.all([
+    employee.transporterId
+      ? prisma.announcement.count({
+          where: {
+            transporterId: { equals: employee.transporterId, mode: 'insensitive' },
+            dspId: employee.dspId,
+            readAt: null,
+          },
+        })
+      : 0,
+    prisma.broadcastInstance.count({
+      where: { employeeId: employee.id, dspId: employee.dspId, readAt: null },
+    }),
+  ])
 
-  res.json({ count })
+  res.json({ count: coachingCount + broadcastCount })
 }

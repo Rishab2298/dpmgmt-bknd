@@ -98,6 +98,8 @@ enum ActivityEntityType {
   EMPLOYEE
   VEHICLE
   SHIFT
+  DOCUMENT
+  INCIDENT
 }
 
 enum ConversationType {
@@ -106,11 +108,21 @@ enum ConversationType {
 }
 
 enum LoadOutTaskType {
-  YES_NO    // driver taps Yes or No
-  TEXT      // free-text input
-  NUMERIC   // number input (e.g. mileage, fuel %)
-  PHOTO     // one or more photos from camera/gallery
-  VIN_SCAN  // QR code scan → decoded VIN verified against shift vehicle
+  YES_NO              // driver taps Yes or No
+  TEXT                // free-text input
+  NUMERIC             // number input (e.g. mileage, fuel %)
+  PHOTO               // one or more photos from camera/gallery
+  VIN_SCAN            // QR code scan → decoded VIN verified against shift vehicle
+  VEHICLE_INSPECTION  // 6-angle vehicle photo inspection (front, back, left, right, iso-front-left, iso-rear-right)
+}
+
+enum RTSTaskType {
+  YES_NO
+  TEXT
+  NUMERIC
+  PHOTO
+  VIN_SCAN
+  VEHICLE_INSPECTION
 }
 
 enum VehicleImageCategory {
@@ -143,9 +155,29 @@ enum MaintenanceStatus {
   CANCELLED
 }
 
+enum ShiftActionStatus {
+  PENDING_DRIVER     // swap: awaiting target driver
+  PENDING_MANAGER    // awaiting operator approval
+  APPROVED           // executed
+  REJECTED_DRIVER    // target driver rejected
+  REJECTED_MANAGER   // manager rejected
+  CANCELLED          // requester withdrew
+  EXPIRED            // shift date passed
+}
+
 enum NotificationType {
   LICENSE_EXPIRY
-  // Future: VEHICLE_REGISTRATION, INSURANCE, CERTIFICATION, etc.
+  VEHICLE_MAINTENANCE
+  SHIFT_REMINDER
+  DOCUMENT_EXPIRY
+  SHIFT_SWAP_REQUEST
+  SHIFT_SWAP_ACCEPTED
+  SHIFT_SWAP_REJECTED
+  SHIFT_SWAP_APPROVED
+  SHIFT_SWAP_DENIED
+  SHIFT_DROP_REQUEST
+  SHIFT_DROP_APPROVED
+  SHIFT_DROP_DENIED
 }
 
 enum NotificationChannel {
@@ -159,16 +191,18 @@ enum NotificationChannel {
 
 // DSP — top-level Amazon Delivery Service Partner company
 model Dsp {
-  id          String   @id @default(cuid())
-  name        String
-  amazonDspId String?  @unique // DSP ID from Cortex URL (for RouteAssist)
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  id             String   @id @default(cuid())
+  name           String
+  amazonDspId    String?  @unique // DSP ID from Cortex URL (for RouteAssist)
+  extensionToken String?  @unique // Long-lived token for Chrome extension API calls (bypasses Clerk)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
 
   stations       Station[]
   employees      Employee[]
   vehicles       Vehicle[]
   vehicleImages              VehicleImage[]
+  vehicleInspections         VehicleInspection[]
   vehicleServicePeriods      VehicleServicePeriod[]
   vehicleMaintenanceRecords  VehicleMaintenanceRecord[]
   scheduledMaintenances      ScheduledMaintenance[]
@@ -182,12 +216,20 @@ model Dsp {
   shiftLogs      ShiftLog[]
   routeCommitments RouteCommitment[]
   loadOutTemplates LoadOutTemplate[]
+  rtsTemplates     RTSTemplate[]
   conversations    Conversation[]
   scorecardWeeks   ScorecardWeek[]
   coachingRules    CoachingRule[]
   announcements    Announcement[]
   notifications    Notification[]
   notificationLogs NotificationLog[]
+  broadcastTemplates BroadcastTemplate[]
+  broadcastMessages  BroadcastMessage[]
+  documents          Document[]
+  shiftDropRequests  ShiftDropRequest[]
+  shiftSwapRequests  ShiftSwapRequest[]
+  incidentCategories IncidentCategory[]
+  incidents          Incident[]
 }
 
 // Station — Amazon delivery station (DSP can have one primary + TCO stations)
@@ -214,6 +256,7 @@ model Station {
   // Settings
   enrollInDailySummaryReport Boolean @default(false)
   currency                   String  @default("USD")
+  safetyRemindersHtml        String? // Rich text HTML for station safety reminders (shown to drivers in load out)
 
   isPrimary Boolean  @default(true) // false = TCO (Temporary Cross-over) station
   createdAt DateTime @default(now())
@@ -233,7 +276,12 @@ model Station {
   invoiceTypes          InvoiceType[]
   routeCommitments      RouteCommitment[]
   loadOutTemplate       LoadOutTemplate?
+  rtsTemplate           RTSTemplate?
   notificationConfigs   NotificationConfig[]
+  broadcastMessages     BroadcastMessage[]
+  documents             Document[]
+  incidents             Incident[]
+  referenceLocations    ReferenceLocation[]
 
   @@unique([dspId, code])
 }
@@ -325,6 +373,7 @@ model Employee {
   lastUsedDevices        Device[]         @relation("DeviceLastUsedBy")
   lastUsedVehicles       Vehicle[]        @relation("VehicleLastUsedBy")
   uploadedVehicleImages  VehicleImage[]   @relation("VehicleImageUploader")
+  vehicleInspections     VehicleInspection[] @relation("VehicleInspector")
   shifts                 Shift[]
   availabilities         Availability[]
   emergencyContacts      EmergencyContact[]
@@ -341,6 +390,23 @@ model Employee {
 
   // Notifications
   notifications Notification[]
+
+  // Broadcasts
+  broadcastInstances BroadcastInstance[]
+
+  // Documents
+  uploadedDocuments Document[] @relation("DocumentUploader")
+
+  // Shift Actions (Drop / Swap)
+  dropRequests         ShiftDropRequest[]  @relation("DropRequester")
+  dropsResolved        ShiftDropRequest[]  @relation("DropResolver")
+  swapRequestsSent     ShiftSwapRequest[]  @relation("SwapRequester")
+  swapRequestsReceived ShiftSwapRequest[]  @relation("SwapTarget")
+  swapsResolved        ShiftSwapRequest[]  @relation("SwapResolver")
+
+  // Incidents
+  incidentsAsDriver Incident[] @relation("IncidentDriver")
+  incidentsReported Incident[] @relation("IncidentReporter")
 }
 
 // Vehicle — a van in the fleet
@@ -445,12 +511,14 @@ model Vehicle {
 
   lastUsedByEmployee Employee?             @relation("VehicleLastUsedBy", fields: [lastUsedByEmployeeId], references: [id])
   images                 VehicleImage[]
+  inspections            VehicleInspection[]
   servicePeriods         VehicleServicePeriod[]
   maintenanceRecords     VehicleMaintenanceRecord[]
   scheduledMaintenances  ScheduledMaintenance[]
   maintenanceChecklists  MaintenanceChecklist[]
   shifts                 Shift[]               // day-of assignments
   loadOutSubmissions     LoadOutSubmission[]
+  rtsSubmissions         RTSSubmission[]
 
   @@unique([dspId, vehicleId])
 }
@@ -473,6 +541,33 @@ model VehicleImage {
   vehicle    Vehicle   @relation(fields: [vehicleId], references: [id], onDelete: Cascade)
   dsp        Dsp       @relation(fields: [dspId], references: [id])
   uploadedBy Employee? @relation("VehicleImageUploader", fields: [uploadedByEmployeeId], references: [id])
+}
+
+// VehicleInspection — a grouped set of 6-angle inspection photos for a vehicle
+model VehicleInspection {
+  id          String   @id @default(cuid())
+  vehicleId   String
+  dspId       String
+  shiftId     String?
+  employeeId  String
+  source      String   @default("LOAD_OUT") // LOAD_OUT or RTS
+  completedAt DateTime
+  createdAt   DateTime @default(now())
+
+  vehicle  Vehicle                  @relation(fields: [vehicleId], references: [id], onDelete: Cascade)
+  dsp      Dsp                      @relation(fields: [dspId], references: [id])
+  employee Employee                 @relation("VehicleInspector", fields: [employeeId], references: [id])
+  images   VehicleInspectionImage[]
+}
+
+model VehicleInspectionImage {
+  id           String @id @default(cuid())
+  inspectionId String
+  angle        String // front, back, left, right, iso-front-left, iso-rear-right
+  url          String
+  createdAt    DateTime @default(now())
+
+  inspection VehicleInspection @relation(fields: [inspectionId], references: [id], onDelete: Cascade)
 }
 
 // VehicleServicePeriod — one active-service window for a vehicle (start required, end nullable = still active)
@@ -694,6 +789,36 @@ model StationVehicleType {
   @@unique([stationId, name])
 }
 
+// ReferenceLocation — a zone/area grouping within a station (e.g. "Lane 1", "AM", "Door A")
+model ReferenceLocation {
+  id        String   @id @default(cuid())
+  stationId String
+  name      String
+  sortOrder Int      @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  station          Station           @relation(fields: [stationId], references: [id], onDelete: Cascade)
+  stagingLocations StagingLocation[]
+
+  @@unique([stationId, name])
+}
+
+// StagingLocation — an individual staging spot within a reference location (e.g. "STG.R1", "STG.R2")
+model StagingLocation {
+  id                  String   @id @default(cuid())
+  referenceLocationId String
+  name                String
+  sortOrder           Int      @default(0)
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  referenceLocation ReferenceLocation @relation(fields: [referenceLocationId], references: [id], onDelete: Cascade)
+  shifts            Shift[]
+
+  @@unique([referenceLocationId, name])
+}
+
 // ShiftType — scheduling template (start/end time, skill, vehicle group)
 model ShiftType {
   id              String  @id @default(cuid())
@@ -735,6 +860,7 @@ model Shift {
   employeeId  String
   shiftTypeId String?     // null = manual (ad-hoc) shift
   vehicleId   String?     // assigned day-of; determines actual vehicle type for RC tracking
+  stagingLocationId String?  // assigned staging spot from station map
 
   date      String      // "YYYY-MM-DD" stored as local date
   startTime String?     // "HH:MM" 24h — overrides shiftType.startTime if set
@@ -758,9 +884,19 @@ model Shift {
   employee  Employee   @relation(fields: [employeeId], references: [id])
   shiftType ShiftType? @relation(fields: [shiftTypeId], references: [id])
   vehicle   Vehicle?   @relation(fields: [vehicleId], references: [id])
+  stagingLocation StagingLocation? @relation(fields: [stagingLocationId], references: [id])
   devices          ShiftDevice[]
   logs             ShiftLog[]
   loadOutSubmission LoadOutSubmission?
+  rtsSubmission     RTSSubmission?
+
+  // Shift Actions
+  dropRequests          ShiftDropRequest[]
+  swapRequestsAsRequester ShiftSwapRequest[] @relation("SwapRequesterShift")
+  swapRequestsAsTarget    ShiftSwapRequest[] @relation("SwapTargetShift")
+
+  // Incidents
+  incidents Incident[]
 }
 
 // ShiftDevice — junction: devices assigned to a work block
@@ -1023,6 +1159,140 @@ model LoadOutAnswer {
   task       LoadOutTask       @relation(fields: [taskId], references: [id])
 }
 
+// ─── RTS (Return to Station) ─────────────────────────────────────────────────
+
+// RTSTemplate — one RTS checklist configuration per station
+model RTSTemplate {
+  id           String   @id @default(cuid())
+  stationId    String   @unique
+  dspId        String
+  introduction String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  station  Station      @relation(fields: [stationId], references: [id])
+  dsp      Dsp          @relation(fields: [dspId], references: [id])
+  sections RTSSection[]
+}
+
+// RTSSection — a named group of tasks within an RTS template
+model RTSSection {
+  id         String @id @default(cuid())
+  templateId String
+  title      String
+  sortOrder  Int    @default(0)
+
+  template RTSTemplate @relation(fields: [templateId], references: [id], onDelete: Cascade)
+  tasks    RTSTask[]
+}
+
+// RTSTask — a single question/step within an RTS section
+model RTSTask {
+  id          String      @id @default(cuid())
+  sectionId   String
+  type        RTSTaskType
+  label       String
+  description String?
+  required    Boolean     @default(true)
+  sortOrder   Int         @default(0)
+  metadata    Json?
+
+  section RTSSection @relation(fields: [sectionId], references: [id], onDelete: Cascade)
+  answers RTSAnswer[]
+}
+
+// RTSSubmission — one completed RTS per shift
+model RTSSubmission {
+  id          String   @id @default(cuid())
+  dspId       String
+  stationId   String
+  shiftId     String   @unique // one RTS submission per shift
+  vehicleId   String?
+  employeeId  String
+  completedAt DateTime
+  createdAt   DateTime @default(now())
+
+  shift   Shift    @relation(fields: [shiftId], references: [id])
+  vehicle Vehicle? @relation(fields: [vehicleId], references: [id])
+  answers RTSAnswer[]
+}
+
+// RTSAnswer — driver's answer for one task within an RTS submission
+model RTSAnswer {
+  id           String   @id @default(cuid())
+  submissionId String
+  taskId       String
+  boolValue    Boolean?
+  textValue    String?
+  numericValue Float?
+  photoUrls    String[]
+  metadata     Json?
+  createdAt    DateTime @default(now())
+
+  submission RTSSubmission @relation(fields: [submissionId], references: [id], onDelete: Cascade)
+  task       RTSTask       @relation(fields: [taskId], references: [id])
+}
+
+// ─── Shift Actions (Drop / Swap) ─────────────────────────────────────────────
+
+// ShiftDropRequest — driver requests to drop a shift; requires manager approval
+model ShiftDropRequest {
+  id         String            @id @default(cuid())
+  dspId      String
+  shiftId    String
+  employeeId String
+  reason     String?
+  status     ShiftActionStatus @default(PENDING_MANAGER)
+
+  resolvedByEmployeeId String?
+  resolvedAt           DateTime?
+  resolutionNote       String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  dsp        Dsp       @relation(fields: [dspId], references: [id])
+  shift      Shift     @relation(fields: [shiftId], references: [id])
+  employee   Employee  @relation("DropRequester", fields: [employeeId], references: [id])
+  resolvedBy Employee? @relation("DropResolver", fields: [resolvedByEmployeeId], references: [id])
+
+  @@index([dspId, status])
+  @@index([employeeId])
+  @@index([shiftId])
+}
+
+// ShiftSwapRequest — driver requests to swap shifts with another driver
+// Flow: PENDING_DRIVER (target accepts/rejects) → PENDING_MANAGER (operator approves/rejects)
+model ShiftSwapRequest {
+  id               String            @id @default(cuid())
+  dspId            String
+  requesterId      String
+  requesterShiftId String
+  targetId         String
+  targetShiftId    String
+  status           ShiftActionStatus @default(PENDING_DRIVER)
+
+  targetRespondedAt DateTime?
+
+  resolvedByEmployeeId String?
+  resolvedAt           DateTime?
+  resolutionNote       String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  dsp            Dsp       @relation(fields: [dspId], references: [id])
+  requester      Employee  @relation("SwapRequester", fields: [requesterId], references: [id])
+  requesterShift Shift     @relation("SwapRequesterShift", fields: [requesterShiftId], references: [id])
+  target         Employee  @relation("SwapTarget", fields: [targetId], references: [id])
+  targetShift    Shift     @relation("SwapTargetShift", fields: [targetShiftId], references: [id])
+  resolvedBy     Employee? @relation("SwapResolver", fields: [resolvedByEmployeeId], references: [id])
+
+  @@index([dspId, status])
+  @@index([requesterId])
+  @@index([targetId, status])
+}
+
 // SuperAdmin — platform-level user who manages the SaaS product itself
 // Identified in Clerk via publicMetadata.role = "SUPER_ADMIN"
 // Has no DSP context — completely separate from Employee
@@ -1233,6 +1503,92 @@ model Announcement {
   @@index([weekId])
 }
 
+// ─── Broadcast System ─────────────────────────────────────────────────────────
+
+enum BroadcastFrequency {
+  ONE_TIME
+  DAILY
+  WEEKLY
+}
+
+enum BroadcastStatus {
+  ACTIVE
+  INACTIVE
+}
+
+// BroadcastTemplate — reusable multi-slide content deck
+model BroadcastTemplate {
+  id                  String   @id @default(cuid())
+  dspId               String
+  title               String
+  createdByEmployeeId String
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  dsp      Dsp                @relation(fields: [dspId], references: [id], onDelete: Cascade)
+  slides   BroadcastSlide[]
+  messages BroadcastMessage[]
+
+  @@index([dspId])
+}
+
+// BroadcastSlide — individual slide within a template
+model BroadcastSlide {
+  id         String   @id @default(cuid())
+  templateId String
+  title      String
+  content    String   // Rich text HTML
+  sortOrder  Int      @default(0)
+  createdAt  DateTime @default(now())
+
+  template BroadcastTemplate @relation(fields: [templateId], references: [id], onDelete: Cascade)
+
+  @@index([templateId])
+}
+
+// BroadcastMessage — operator-authored broadcast definition
+model BroadcastMessage {
+  id                  String             @id @default(cuid())
+  dspId               String
+  stationId           String
+  title               String
+  body                String             // Rich text HTML
+  frequency           BroadcastFrequency
+  weeklyDays          Int[]              @default([]) // 0=Sun..6=Sat
+  templateId          String?
+  status              BroadcastStatus    @default(ACTIVE)
+  createdByEmployeeId String
+  lastSentAt          DateTime?
+  createdAt           DateTime           @default(now())
+  updatedAt           DateTime           @updatedAt
+
+  dsp       Dsp                @relation(fields: [dspId], references: [id], onDelete: Cascade)
+  station   Station            @relation(fields: [stationId], references: [id], onDelete: Cascade)
+  template  BroadcastTemplate? @relation(fields: [templateId], references: [id], onDelete: SetNull)
+  instances BroadcastInstance[]
+
+  @@index([dspId, stationId])
+  @@index([status])
+}
+
+// BroadcastInstance — per-driver delivery record (created each recurrence)
+model BroadcastInstance {
+  id                 String    @id @default(cuid())
+  broadcastMessageId String
+  employeeId         String
+  dspId              String
+  stationId          String
+  sentAt             DateTime  @default(now())
+  readAt             DateTime?
+
+  broadcastMessage BroadcastMessage @relation(fields: [broadcastMessageId], references: [id], onDelete: Cascade)
+  employee         Employee         @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+
+  @@index([employeeId, readAt])
+  @@index([broadcastMessageId])
+  @@index([dspId, stationId])
+}
+
 // ─── Notification System ──────────────────────────────────────────────────────
 
 // NotificationConfig — per-station, per-type notification settings
@@ -1250,6 +1606,10 @@ model NotificationConfig {
   dspEnabled      Boolean              @default(false)
   dspReminderDays Int[]                @default([])
   dspChannels     NotificationChannel[] @default([])
+
+  // Shift-reminder-specific (used only when type = SHIFT_REMINDER)
+  reminderHours    Int[]    @default([])
+  messageTemplate  String?
 
   station   Station  @relation(fields: [stationId], references: [id], onDelete: Cascade)
   createdAt DateTime @default(now())
@@ -1296,4 +1656,154 @@ model NotificationLog {
 
   @@unique([type, channel, recipientId, subjectId, reminderDay, triggerDate])
   @@index([dspId, type, triggerDate])
+}
+
+// ─── Incidents ────────────────────────────────────────────────────────────────
+
+// IncidentCategory — configurable incident types per DSP (with status flow)
+model IncidentCategory {
+  id         String   @id @default(cuid())
+  dspId      String
+  name       String   // "Callout", "Late Arrival", "NCNS", "Accident/Injury", or custom
+  statusFlow String[] // ordered status stages, e.g. ["OPEN","ACKNOWLEDGED","RESOLVED"]
+  isSystem   Boolean  @default(false) // true = built-in default, cannot be deleted
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  dsp       Dsp        @relation(fields: [dspId], references: [id])
+  incidents Incident[]
+
+  @@unique([dspId, name])
+}
+
+// Incident — a reported driver incident (callout, late arrival, NCNS, accident, etc.)
+model Incident {
+  id             String   @id @default(cuid())
+  dspId          String
+  stationId      String
+  incidentNumber Int      // per-DSP sequential; displayed as "INC-001"
+  categoryId     String
+  driverId       String   // Employee (DELIVERY_ASSOCIATE) the incident is about
+  reportedById   String   // Employee (operator) who created the report
+
+  description  String?
+  incidentDate String    // "YYYY-MM-DD"
+  incidentTime String?   // "HH:MM" 24h
+  shiftId      String?   // optional link to a specific shift
+  status       String    // current status from category.statusFlow (validated in code)
+  dueDate      DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  dsp        Dsp              @relation(fields: [dspId], references: [id])
+  station    Station           @relation(fields: [stationId], references: [id])
+  category   IncidentCategory  @relation(fields: [categoryId], references: [id])
+  driver     Employee          @relation("IncidentDriver", fields: [driverId], references: [id])
+  reportedBy Employee          @relation("IncidentReporter", fields: [reportedById], references: [id])
+  shift      Shift?            @relation(fields: [shiftId], references: [id])
+  logs       IncidentLog[]
+  workflowSteps IncidentWorkflowStep[]
+  photos        IncidentPhoto[]
+
+  @@unique([dspId, incidentNumber])
+  @@index([dspId, stationId])
+  @@index([dspId, status])
+  @@index([driverId])
+}
+
+// IncidentLog — per-incident timeline (status changes, edits, manual notes)
+model IncidentLog {
+  id                 String   @id @default(cuid())
+  incidentId         String
+  dspId              String
+  type               String   // "CREATED" | "STATUS_CHANGE" | "EDITED" | "NOTE"
+  action             String   // human-readable, e.g. "Status changed: OPEN → ACKNOWLEDGED"
+  note               String?  // free-text for manual notes
+  metadata           Json?
+  performedByClerkId String?
+  performedByName    String?
+
+  createdAt DateTime @default(now())
+
+  incident Incident @relation(fields: [incidentId], references: [id], onDelete: Cascade)
+
+  @@index([incidentId, createdAt])
+}
+
+// IncidentWorkflowStep — per-incident 8-step Accident/Injury workflow
+model IncidentWorkflowStep {
+  id               String   @id @default(cuid())
+  incidentId       String
+  dspId            String
+  stepNumber       Int      // 1-8
+  title            String   // "Driver Tasks", "Dispatch Tasks", etc.
+  assignedRole     String   // PermissionLevel value
+  status           String   @default("PENDING") // PENDING | ACTIVE | IN_PROGRESS | SUBMITTED | SKIPPED
+  data             Json?    // step-specific form data (Zod-validated per step)
+  submittedByClerkId String?
+  submittedByName    String?
+  submittedAt      DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  incident Incident @relation(fields: [incidentId], references: [id], onDelete: Cascade)
+
+  @@unique([incidentId, stepNumber])
+  @@index([incidentId])
+  @@index([dspId, status])
+}
+
+// IncidentPhoto — photos attached to incident workflow steps
+model IncidentPhoto {
+  id                String   @id @default(cuid())
+  incidentId        String
+  dspId             String
+  stepNumber        Int      // which workflow step this photo belongs to
+  fieldKey          String   // identifies which field, e.g. "frontLeftPhoto"
+  url               String   // /uploads/incidents/{filename}
+  fileName          String   // original filename
+  uploadedByClerkId String?
+  uploadedByName    String?
+
+  createdAt DateTime @default(now())
+
+  incident Incident @relation(fields: [incidentId], references: [id], onDelete: Cascade)
+
+  @@index([incidentId, stepNumber])
+}
+
+// Document — uploaded file stored by the DSP (insurance, contracts, licenses, etc.)
+model Document {
+  id        String   @id @default(cuid())
+  dspId     String
+  stationId String?  // null = company-wide
+
+  // File metadata
+  name     String   // user-provided display name
+  fileName String   // original uploaded filename
+  fileUrl  String   // /uploads/documents/{file}
+  fileSize Int      // bytes
+  mimeType String
+  category String   // free-text: INSURANCE, CONTRACT, LICENSE, etc.
+  notes    String?
+
+  // Expiry + per-document notification config
+  expiryDate         DateTime?
+  notifyChannels     NotificationChannel[] @default([])
+  notifyReminderDays Int[]                 @default([])
+
+  // Audit
+  uploadedByEmployeeId String
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  dsp        Dsp       @relation(fields: [dspId], references: [id], onDelete: Cascade)
+  station    Station?  @relation(fields: [stationId], references: [id])
+  uploadedBy Employee  @relation("DocumentUploader", fields: [uploadedByEmployeeId], references: [id])
+
+  @@index([dspId, category])
+  @@index([dspId, expiryDate])
 }

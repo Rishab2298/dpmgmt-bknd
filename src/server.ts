@@ -13,6 +13,10 @@ import app from './app'
 import { setupSocketServer } from './lib/socket'
 import { startServiceStatusSyncJob } from './jobs/serviceStatusSync'
 import { startLicenseExpiryJob } from './jobs/licenseExpiryNotifications'
+import { startMaintenanceNotificationJob } from './jobs/maintenanceNotifications'
+import { startShiftReminderJob } from './jobs/shiftReminderNotifications'
+import { startBroadcastInstanceJob } from './jobs/broadcastInstances'
+import { startDocumentExpiryJob } from './jobs/documentExpiryNotifications'
 
 const PORT = process.env.PORT ?? 3000
 
@@ -23,6 +27,10 @@ httpServer.listen(PORT, () => {
   console.log(`Server running on http://localhost:${PORT}`)
   startServiceStatusSyncJob()
   startLicenseExpiryJob()
+  startMaintenanceNotificationJob()
+  startShiftReminderJob()
+  startBroadcastInstanceJob()
+  startDocumentExpiryJob()
 })
 
 // Graceful shutdown — release port so tsx watch restarts cleanly

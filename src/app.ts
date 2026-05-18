@@ -21,12 +21,17 @@ import checklistsRoutes from './routes/checklists.routes'
 import checklistItemsRoutes from './routes/checklist-items.routes'
 import routesRoutes from './routes/routes.routes'
 import loadoutRoutes from './routes/loadout.routes'
+import rtsRoutes from './routes/rts.routes'
 import chatRoutes from './routes/chat.routes'
 import availabilityRoutes from './routes/availability.routes'
 import scorecardRoutes from './routes/scorecards.routes'
 import coachingRoutes from './routes/coaching.routes'
 import announcementRoutes from './routes/announcements.routes'
+import broadcastRoutes from './routes/broadcasts.routes'
 import notificationRoutes from './routes/notifications.routes'
+import documentsRoutes from './routes/documents.routes'
+import shiftActionsRoutes from './routes/shift-actions.routes'
+import incidentsRoutes from './routes/incidents.routes'
 
 const app = express()
 
@@ -62,12 +67,17 @@ app.use('/api/maintenance-checklists', checklistsRoutes)
 app.use('/api/maintenance-checklist-items', checklistItemsRoutes)
 app.use('/api/routes', routesRoutes)
 app.use('/api/loadout', loadoutRoutes)
+app.use('/api/rts', rtsRoutes)
 app.use('/api/chat', chatRoutes)
 app.use('/api/availability', availabilityRoutes)
 app.use('/api/scorecards', scorecardRoutes)
 app.use('/api/coaching', coachingRoutes)
 app.use('/api/announcements', announcementRoutes)
+app.use('/api/broadcasts', broadcastRoutes)
 app.use('/api/notifications', notificationRoutes)
+app.use('/api/documents', documentsRoutes)
+app.use('/api/shift-actions', shiftActionsRoutes)
+app.use('/api/incidents', incidentsRoutes)
 
 Sentry.setupExpressErrorHandler(app)
 app.use(errorHandler)

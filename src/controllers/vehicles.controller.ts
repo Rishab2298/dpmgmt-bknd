@@ -42,6 +42,12 @@ const VEHICLE_INCLUDE = {
   requiredQualification: { select: { id: true, name: true } },
   lastUsedByEmployee: { select: { id: true, legalFirstName: true, legalLastName: true } },
   servicePeriods: { orderBy: { startDate: 'desc' as const } },
+  scheduledMaintenances: {
+    where: { isCompleted: false },
+    select: { id: true, scheduledAt: true, title: true },
+    orderBy: { scheduledAt: 'asc' as const },
+    take: 3,
+  },
 }
 
 // ─── Activity log helper ──────────────────────────────────────────────────────
@@ -444,6 +450,23 @@ export async function listVehicleImages(req: Request, res: Response) {
     include: { uploadedBy: { select: { id: true, legalFirstName: true, legalLastName: true } } },
   })
   res.json(images)
+}
+
+export async function listVehicleInspections(req: Request, res: Response) {
+  const { userId } = getAuth(req)
+  const id = req.params.id as string
+  const result = await resolveVehicleOwnership(userId!, id)
+  if (!result) { res.status(404).json({ message: 'Vehicle not found' }); return }
+
+  const inspections = await prisma.vehicleInspection.findMany({
+    where: { vehicleId: id },
+    orderBy: { completedAt: 'desc' },
+    include: {
+      employee: { select: { id: true, legalFirstName: true, legalLastName: true } },
+      images: { orderBy: { createdAt: 'asc' } },
+    },
+  })
+  res.json(inspections)
 }
 
 // Ensure uploads directory exists

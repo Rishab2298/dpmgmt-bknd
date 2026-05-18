@@ -1,5 +1,5 @@
 import { Router } from 'express'
-import { requireAuth } from '../middleware/auth'
+import { requireAuthOrExtensionToken } from '../middleware/auth'
 import {
   uploadMiddleware,
   processDocuments,
@@ -12,7 +12,7 @@ import {
 } from '../controllers/scorecards.controller'
 
 const router = Router()
-router.use(requireAuth())
+router.use(requireAuthOrExtensionToken())
 
 // Driver-facing: get my scorecards (must be before /weeks/:weekId)
 router.get('/my', getMyScorecard)

@@ -61,9 +61,92 @@ async function writeShiftLog(opts: {
   })
 }
 
-/** HH:MM string comparison — returns true if two time ranges overlap */
+function toMinutes(time: string): number {
+  const [h, m] = time.split(':').map(Number)
+  return h * 60 + m
+}
+
+/**
+ * Returns absolute [startMin, endMin] range for a shift placed at dayOffset (in minutes).
+ * Overnight shifts (start > end) get +1440 added to endMin.
+ */
+function shiftAbsoluteRange(dayOffset: number, startTime: string, endTime: string): [number, number] {
+  const start = dayOffset + toMinutes(startTime)
+  let end = dayOffset + toMinutes(endTime)
+  if (end <= start) end += 1440 // overnight: end is next day
+  return [start, end]
+}
+
+/** Returns true if two time ranges overlap (handles overnight shifts where start > end) */
 function timesOverlap(s1: string, e1: string, s2: string, e2: string) {
-  return s1 < e2 && e1 > s2
+  const r1 = shiftAbsoluteRange(0, s1, e1)
+  const r2 = shiftAbsoluteRange(0, s2, e2)
+  return r1[0] < r2[1] && r1[1] > r2[0]
+}
+
+function formatDateStr(d: Date): string {
+  const y = d.getFullYear()
+  const m = String(d.getMonth() + 1).padStart(2, '0')
+  const day = String(d.getDate()).padStart(2, '0')
+  return `${y}-${m}-${day}`
+}
+
+/**
+ * Checks if a proposed shift overlaps with any existing shifts for the employee.
+ * Handles overnight shifts by checking adjacent dates.
+ * Returns IDs of overlapping shifts.
+ */
+async function checkShiftOverlap(opts: {
+  employeeId: string
+  date: string
+  startTime: string
+  endTime: string
+  excludeShiftIds?: string[]
+}): Promise<string[]> {
+  const { employeeId, date, startTime, endTime, excludeShiftIds } = opts
+
+  const d = new Date(date + 'T12:00:00')
+  const prev = new Date(d); prev.setDate(prev.getDate() - 1)
+  const next = new Date(d); next.setDate(next.getDate() + 1)
+  const prevDate = formatDateStr(prev)
+  const nextDate = formatDateStr(next)
+
+  const candidates = await prisma.shift.findMany({
+    where: {
+      employeeId,
+      date: { in: [prevDate, date, nextDate] },
+      ...(excludeShiftIds?.length ? { id: { notIn: excludeShiftIds } } : {}),
+    },
+    select: {
+      id: true, date: true, startTime: true, endTime: true,
+      shiftType: { select: { startTime: true, endTime: true } },
+    },
+  })
+
+  const newRange = shiftAbsoluteRange(0, startTime, endTime)
+
+  const dayOffsets: Record<string, number> = {
+    [prevDate]: -1440,
+    [date]: 0,
+    [nextDate]: 1440,
+  }
+
+  const overlappingIds: string[] = []
+  for (const c of candidates) {
+    const cStart = c.startTime ?? c.shiftType?.startTime
+    const cEnd = c.endTime ?? c.shiftType?.endTime
+    if (!cStart || !cEnd) continue
+
+    const offset = dayOffsets[c.date]
+    if (offset === undefined) continue
+
+    const cRange = shiftAbsoluteRange(offset, cStart, cEnd)
+    if (newRange[0] < cRange[1] && newRange[1] > cRange[0]) {
+      overlappingIds.push(c.id)
+    }
+  }
+
+  return overlappingIds
 }
 
 // ─── GET /api/scheduler/grid ──────────────────────────────────────────────────
@@ -171,6 +254,137 @@ export async function getGrid(req: Request, res: Response) {
   res.json({ weekStart: dates[0], drivers: allDrivers, shifts: formattedShifts, rcByDay, availabilitySlots: formattedAvailability })
 }
 
+// ─── GET /api/scheduler/loadout ──────────────────────────────────────────────
+
+const loadOutQuerySchema = z.object({
+  stationId: z.string().min(1),
+  date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+})
+
+export async function getLoadOut(req: Request, res: Response) {
+  const { userId } = getAuth(req)
+  const parsed = loadOutQuerySchema.safeParse(req.query)
+  if (!parsed.success) {
+    res.status(400).json({ message: 'stationId and date (YYYY-MM-DD) are required' })
+    return
+  }
+  const { stationId, date } = parsed.data
+
+  const me = await getCallerEmployee(userId!)
+  if (!me?.dspId) { res.status(404).json({ error: 'No DSP found' }); return }
+
+  // Compute the week's Sunday for RC lookup
+  const dateObj = new Date(date + 'T12:00:00')
+  dateObj.setDate(dateObj.getDate() - dateObj.getDay())
+  const weekStart = formatDateStr(dateObj)
+  const dayOfWeek = new Date(date + 'T12:00:00').getDay() // 0=Sun, 6=Sat
+  const RC_KEYS = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'] as const
+
+  const [shifts, commitments] = await Promise.all([
+    prisma.shift.findMany({
+    where: { stationId, dspId: me.dspId, date },
+    include: {
+      employee: {
+        select: {
+          id: true, legalFirstName: true, legalLastName: true,
+          workMobile: true, personalMobile: true, chatEnabled: true,
+        },
+      },
+      shiftType: {
+        select: { id: true, name: true, color: true, durationMinutes: true },
+      },
+      vehicle: {
+        select: { id: true, vehicleId: true, make: true, model: true, vin: true },
+      },
+      devices: {
+        include: { device: { select: { id: true, deviceName: true, serialNumber: true, phoneNumber: true } } },
+      },
+      loadOutSubmission: {
+        select: {
+          id: true,
+          completedAt: true,
+          answers: {
+            select: { boolValue: true, task: { select: { label: true } } },
+          },
+        },
+      },
+      stagingLocation: {
+        select: { id: true, name: true, referenceLocation: { select: { id: true, name: true } } },
+      },
+    },
+    orderBy: [{ startTime: 'asc' }, { employee: { legalLastName: 'asc' } }],
+  }),
+    prisma.routeCommitment.findMany({
+      where: { stationId, weekStart },
+      select: { sun: true, mon: true, tue: true, wed: true, thu: true, fri: true, sat: true },
+    }),
+  ])
+
+  const routeCommitment = commitments.reduce((sum, c) => sum + (c[RC_KEYS[dayOfWeek]] ?? 0), 0)
+
+  // Compute allotted minutes per employee (sum of all shifts for the day)
+  const minutesByEmployee = new Map<string, number>()
+  for (const s of shifts) {
+    const dur = s.shiftType?.durationMinutes ?? computeMinutes(s.startTime, s.endTime)
+    minutesByEmployee.set(s.employeeId, (minutesByEmployee.get(s.employeeId) ?? 0) + (dur ?? 0))
+  }
+
+  const rows = shifts.map((s) => {
+    // Determine punch-in: loadout submission has an ADP clock-in answer with boolValue true
+    const adpAnswer = s.loadOutSubmission?.answers.find(
+      (a) => a.task.label === 'Have you clocked in to ADP today?'
+    )
+    const punchedIn = !!(adpAnswer && adpAnswer.boolValue === true)
+
+    return {
+      id: s.id,
+      date: s.date,
+      startTime: s.startTime,
+      endTime: s.endTime,
+      status: s.status,
+      routes: s.routes,
+      isTrainer: s.isTrainer,
+      isLightDuty: s.isLightDuty,
+      isRescue: s.isRescue,
+      employee: {
+        id: s.employee.id,
+        name: `${s.employee.legalFirstName} ${s.employee.legalLastName}`,
+        workMobile: s.employee.workMobile,
+        personalMobile: s.employee.personalMobile,
+        chatEnabled: s.employee.chatEnabled,
+      },
+      shiftType: s.shiftType
+        ? { id: s.shiftType.id, name: s.shiftType.name, color: s.shiftType.color, durationMinutes: s.shiftType.durationMinutes }
+        : null,
+      vehicle: s.vehicle
+        ? { id: s.vehicle.id, vehicleId: s.vehicle.vehicleId, make: s.vehicle.make, model: s.vehicle.model, vin: s.vehicle.vin }
+        : null,
+      devices: s.devices.map((sd) => ({
+        id: sd.device.id,
+        deviceName: sd.device.deviceName,
+        serialNumber: sd.device.serialNumber,
+        phoneNumber: sd.device.phoneNumber,
+      })),
+      punchedIn,
+      loadOutCompletedAt: s.loadOutSubmission?.completedAt?.toISOString() ?? null,
+      allottedMinutes: minutesByEmployee.get(s.employeeId) ?? 0,
+      stagingLocation: s.stagingLocation
+        ? { id: s.stagingLocation.id, name: s.stagingLocation.name, referenceLocationName: s.stagingLocation.referenceLocation.name }
+        : null,
+    }
+  })
+
+  res.json({ rows, routeCommitment })
+}
+
+function computeMinutes(start: string | null, end: string | null): number | null {
+  if (!start || !end) return null
+  const [sh, sm] = start.split(':').map(Number)
+  const [eh, em] = end.split(':').map(Number)
+  const mins = (eh * 60 + em) - (sh * 60 + sm)
+  return mins > 0 ? mins : null
+}
+
 // ─── GET /api/scheduler/drivers ───────────────────────────────────────────────
 
 export async function getAvailableDrivers(req: Request, res: Response) {
@@ -231,15 +445,24 @@ export async function createShift(req: Request, res: Response) {
   const employee = await prisma.employee.findFirst({ where: { id: employeeId, dspId: me.dspId }, select: { id: true } })
   if (!employee) { res.status(404).json({ message: 'Employee not found' }); return }
 
-  // Time overlap check — only if both new shift and existing shift have full times
-  if (startTime && endTime) {
-    const existingOnDate = await prisma.shift.findMany({
-      where: { employeeId, date },
+  // Resolve effective times — fall back to shift type when not provided
+  let effectiveStart = startTime ?? null
+  let effectiveEnd = endTime ?? null
+  if ((!effectiveStart || !effectiveEnd) && shiftTypeId) {
+    const st = await prisma.shiftType.findUnique({
+      where: { id: shiftTypeId },
       select: { startTime: true, endTime: true },
     })
-    const overlapping = existingOnDate.filter((ex) => {
-      if (!ex.startTime || !ex.endTime) return false
-      return timesOverlap(startTime, endTime, ex.startTime, ex.endTime)
+    if (st) {
+      effectiveStart = effectiveStart ?? st.startTime
+      effectiveEnd = effectiveEnd ?? st.endTime
+    }
+  }
+
+  // Time overlap check (handles overnight shifts + adjacent dates)
+  if (effectiveStart && effectiveEnd) {
+    const overlapping = await checkShiftOverlap({
+      employeeId, date, startTime: effectiveStart, endTime: effectiveEnd,
     })
     if (overlapping.length > 0) {
       res.status(409).json({ message: 'This work block overlaps with an existing block for this driver' })
@@ -317,6 +540,7 @@ const updateShiftSchema = z.object({
   isTrainer:     z.boolean().optional(),
   isLightDuty:   z.boolean().optional(),
   refusedRescue: z.boolean().optional(),
+  stagingLocationId: z.string().optional().nullable(),
 })
 
 export async function updateWorkBlock(req: Request, res: Response) {
@@ -372,6 +596,10 @@ export async function updateWorkBlock(req: Request, res: Response) {
     updateData.refusedRescue = data.refusedRescue
     if (data.refusedRescue && !existing.refusedRescue) logParts.push('Refused rescue')
   }
+  if ('stagingLocationId' in data) {
+    updateData.stagingLocationId = data.stagingLocationId ?? null
+    if ((existing.stagingLocationId ?? '') !== (data.stagingLocationId ?? '')) logParts.push('Staging location updated')
+  }
 
   const shift = await prisma.shift.update({
     where: { id: existing.id as string },
@@ -380,6 +608,7 @@ export async function updateWorkBlock(req: Request, res: Response) {
       shiftType: { select: { id: true, name: true, color: true, startTime: true, endTime: true, breakMinutes: true, invoiceType: { select: { id: true, name: true, billableHours: true } } } },
       vehicle: { select: { id: true, vehicleId: true, make: true, model: true } },
       devices: { include: { device: { select: { id: true, deviceName: true, phoneNumber: true } } } },
+      stagingLocation: { select: { id: true, name: true, referenceLocation: { select: { id: true, name: true } } } },
       logs: { orderBy: { createdAt: 'desc' } },
     },
   })
@@ -473,6 +702,33 @@ export async function createRescueShift(req: Request, res: Response) {
   })
   if (!rescueEmployee) { res.status(404).json({ message: 'Rescue employee not found' }); return }
 
+  // Resolve effective times for overlap check
+  let effectiveStart = original.startTime
+  let effectiveEnd = original.endTime
+  if ((!effectiveStart || !effectiveEnd) && original.shiftTypeId) {
+    const st = await prisma.shiftType.findUnique({
+      where: { id: original.shiftTypeId },
+      select: { startTime: true, endTime: true },
+    })
+    if (st) {
+      effectiveStart = effectiveStart ?? st.startTime
+      effectiveEnd = effectiveEnd ?? st.endTime
+    }
+  }
+
+  if (effectiveStart && effectiveEnd) {
+    const overlapping = await checkShiftOverlap({
+      employeeId: rescueEmployee.id,
+      date: original.date,
+      startTime: effectiveStart,
+      endTime: effectiveEnd,
+    })
+    if (overlapping.length > 0) {
+      res.status(409).json({ message: 'This rescue shift overlaps with an existing block for the rescue driver' })
+      return
+    }
+  }
+
   const rescueShift = await prisma.shift.create({
     data: {
       dspId: me.dspId,
@@ -542,6 +798,122 @@ export async function sendHome(req: Request, res: Response) {
   })
 
   res.json({ id: shift.id, status: shift.status })
+}
+
+// ─── GET /api/scheduler/shifts/swap-candidates ──────────────────────────────
+
+export async function getSwapCandidates(req: Request, res: Response) {
+  const { userId } = getAuth(req)
+  const me = await getCallerEmployee(userId!)
+  if (!me?.dspId) { res.status(404).json({ error: 'No DSP found' }); return }
+
+  const shiftId = req.query.shiftId as string | undefined
+  if (!shiftId) { res.status(400).json({ message: 'shiftId is required' }); return }
+
+  const source = await resolveShift(shiftId, me.dspId)
+  if (!source) { res.status(404).json({ message: 'Shift not found' }); return }
+
+  // Date range: source shift date through +6 days (7 days total)
+  const startDate = source.date
+  const endD = new Date(source.date + 'T12:00:00')
+  endD.setDate(endD.getDate() + 6)
+  const endDate = formatDateStr(endD)
+
+  const shifts = await prisma.shift.findMany({
+    where: {
+      dspId: me.dspId,
+      stationId: source.stationId,
+      shiftTypeId: source.shiftTypeId,
+      employeeId: { not: source.employeeId },
+      date: { gte: startDate, lte: endDate },
+    },
+    include: {
+      employee: { select: { id: true, legalFirstName: true, legalLastName: true } },
+    },
+    orderBy: [{ date: 'asc' }, { startTime: 'asc' }],
+  })
+
+  // Group by employee
+  const empMap = new Map<string, { id: string; name: string; shifts: Array<{ id: string; date: string; startTime: string | null; endTime: string | null; routes: string[] }> }>()
+
+  for (const s of shifts) {
+    const eid = s.employee.id
+    if (!empMap.has(eid)) {
+      empMap.set(eid, {
+        id: eid,
+        name: `${s.employee.legalFirstName} ${s.employee.legalLastName}`,
+        shifts: [],
+      })
+    }
+    empMap.get(eid)!.shifts.push({
+      id: s.id,
+      date: s.date,
+      startTime: s.startTime,
+      endTime: s.endTime,
+      routes: s.routes,
+    })
+  }
+
+  res.json({ employees: [...empMap.values()] })
+}
+
+// ─── POST /api/scheduler/shifts/swap-routes ─────────────────────────────────
+
+const swapRoutesSchema = z.object({
+  sourceShiftId: z.string().min(1),
+  targetShiftId: z.string().min(1),
+})
+
+export async function swapRoutes(req: Request, res: Response) {
+  const { userId } = getAuth(req)
+  const me = await getCallerEmployee(userId!)
+  if (!me?.dspId) { res.status(404).json({ error: 'No DSP found' }); return }
+
+  const parsed = swapRoutesSchema.safeParse(req.body)
+  if (!parsed.success) { res.status(400).json({ message: parsed.error.issues[0].message }); return }
+  const { sourceShiftId, targetShiftId } = parsed.data
+
+  if (sourceShiftId === targetShiftId) {
+    res.status(400).json({ message: 'Source and target must be different shifts' }); return
+  }
+
+  const [source, target] = await Promise.all([
+    prisma.shift.findUnique({ where: { id: sourceShiftId }, include: { employee: { select: { legalFirstName: true, legalLastName: true } } } }),
+    prisma.shift.findUnique({ where: { id: targetShiftId }, include: { employee: { select: { legalFirstName: true, legalLastName: true } } } }),
+  ])
+
+  if (!source || source.dspId !== me.dspId) { res.status(404).json({ message: 'Source shift not found' }); return }
+  if (!target || target.dspId !== me.dspId) { res.status(404).json({ message: 'Target shift not found' }); return }
+  if (source.stationId !== target.stationId) { res.status(400).json({ message: 'Shifts must be at the same station' }); return }
+  if (source.shiftTypeId !== target.shiftTypeId) { res.status(400).json({ message: 'Shifts must have the same shift type' }); return }
+  if (source.routes.length === 0 && target.routes.length === 0) {
+    res.status(400).json({ message: 'Nothing to swap — both shifts have no routes' }); return
+  }
+
+  const sourceName = `${source.employee.legalFirstName} ${source.employee.legalLastName}`
+  const targetName = `${target.employee.legalFirstName} ${target.employee.legalLastName}`
+  const pName = performerName(me)
+
+  await prisma.$transaction([
+    prisma.shift.update({ where: { id: sourceShiftId }, data: { routes: target.routes } }),
+    prisma.shift.update({ where: { id: targetShiftId }, data: { routes: source.routes } }),
+    prisma.shiftLog.create({
+      data: {
+        shiftId: sourceShiftId, dspId: me.dspId,
+        action: `Routes swapped with ${targetName}: [${source.routes.join(', ')}] → [${target.routes.join(', ')}]`,
+        performedByClerkId: userId!, performedByName: pName,
+      },
+    }),
+    prisma.shiftLog.create({
+      data: {
+        shiftId: targetShiftId, dspId: me.dspId,
+        action: `Routes swapped with ${sourceName}: [${target.routes.join(', ')}] → [${source.routes.join(', ')}]`,
+        performedByClerkId: userId!, performedByName: pName,
+      },
+    }),
+  ])
+
+  res.json({ sourceRoutes: target.routes, targetRoutes: source.routes })
 }
 
 // ─── DELETE /api/scheduler/shifts/:shiftId ───────────────────────────────────
@@ -1037,9 +1409,9 @@ export async function importExecute(req: Request, res: Response) {
     existingByKey.get(key)!.push(s.id)
   }
 
-  let created = 0, replaced = 0, skipped = 0
+  let replaced = 0, skipped = 0
   const idsToDelete: string[] = []
-  const toCreate: typeof entries = []
+  const toCreate: Array<typeof entries[number] & { isReplace?: boolean }> = []
 
   for (const entry of entries) {
     const key = `${entry.employeeId}:${entry.date}`
@@ -1050,24 +1422,41 @@ export async function importExecute(req: Request, res: Response) {
       if (choice === 'skip') { skipped++; continue }
       if (choice === 'replace') {
         idsToDelete.push(...existing)
-        replaced++
+        toCreate.push({ ...entry, isReplace: true })
       } else {
         // 'add' — create alongside existing
-        created++
+        toCreate.push(entry)
       }
     } else {
-      created++
+      toCreate.push(entry)
     }
-    toCreate.push(entry)
   }
 
   if (idsToDelete.length > 0) {
     await prisma.shift.deleteMany({ where: { id: { in: idsToDelete } } })
   }
 
-  if (toCreate.length > 0) {
+  // Validate time overlap for each entry (deleted shifts are already gone)
+  let overlapped = 0
+  const validEntries: typeof toCreate = []
+
+  for (const entry of toCreate) {
+    const overlapping = await checkShiftOverlap({
+      employeeId: entry.employeeId,
+      date: entry.date,
+      startTime: entry.startTime,
+      endTime: entry.endTime,
+    })
+    if (overlapping.length > 0) {
+      overlapped++
+    } else {
+      validEntries.push(entry)
+    }
+  }
+
+  if (validEntries.length > 0) {
     await prisma.shift.createMany({
-      data: toCreate.map(e => ({
+      data: validEntries.map(e => ({
         dspId: me.dspId!,
         stationId,
         employeeId: e.employeeId,
@@ -1080,5 +1469,7 @@ export async function importExecute(req: Request, res: Response) {
     })
   }
 
-  res.json({ created, replaced, skipped, createdShiftTypes })
+  const created = validEntries.filter(e => !e.isReplace).length
+  replaced = validEntries.filter(e => e.isReplace).length
+  res.json({ created, replaced, skipped, overlapped, createdShiftTypes })
 }

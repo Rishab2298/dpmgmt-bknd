@@ -101,6 +101,7 @@ const updateStationSchema = z.object({
   parkingLotAddress:           z.string().nullable().optional(),
   parkingLotLat:               z.number().nullable().optional(),
   parkingLotLng:               z.number().nullable().optional(),
+  safetyRemindersHtml:         z.string().nullable().optional(),
 })
 
 // PATCH /api/stations/:id

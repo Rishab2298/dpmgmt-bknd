@@ -10,7 +10,37 @@ declare global {
       identity?:
         | { type: 'employee'; id: string; dspId: string | null; permissionLevel: string; clerkUserId: string }
         | { type: 'superAdmin'; id: string; role: string; clerkUserId: string }
+      extensionDspId?: string // Set by requireExtensionAuth when using X-Extension-Token
     }
+  }
+}
+
+/**
+ * Middleware that accepts either Clerk auth OR X-Extension-Token header.
+ * If extension token is present and valid, sets req.extensionDspId and skips Clerk.
+ * Otherwise falls through to Clerk's requireAuth().
+ */
+export function requireAuthOrExtensionToken() {
+  const clerkAuth = requireAuth()
+
+  return async (req: Request, res: Response, next: NextFunction) => {
+    const extToken = req.headers['x-extension-token'] as string | undefined
+
+    if (extToken) {
+      const dsp = await prisma.dsp.findUnique({
+        where: { extensionToken: extToken },
+        select: { id: true },
+      })
+      if (!dsp) {
+        res.status(401).json({ error: 'Invalid extension token' })
+        return
+      }
+      req.extensionDspId = dsp.id
+      return next()
+    }
+
+    // No extension token — fall through to Clerk
+    clerkAuth(req, res, next)
   }
 }
 

@@ -20,12 +20,18 @@ import { parseDvic }             from '../lib/scorecards/parsers/xlsx-dvic'
 
 // ─── Auth helper ──────────────────────────────────────────────────────────────
 
-async function resolveDsp(userId: string): Promise<string | null> {
-  const emp = await prisma.employee.findUnique({
+/** Resolve DSP ID from either extension token (req.extensionDspId) or Clerk userId */
+function getDspId(req: Request): Promise<string | null> {
+  // Extension token path — already resolved by middleware
+  if (req.extensionDspId) return Promise.resolve(req.extensionDspId)
+
+  // Clerk path — look up employee by Clerk userId
+  const { userId } = getAuth(req)
+  if (!userId) return Promise.resolve(null)
+  return prisma.employee.findUnique({
     where: { clerkUserId: userId },
     select: { dspId: true },
-  })
-  return emp?.dspId ?? null
+  }).then(emp => emp?.dspId ?? null)
 }
 
 // ─── Multer upload (up to 9 files, 50 MB each) ────────────────────────────────
@@ -38,8 +44,7 @@ export const uploadMiddleware = multer({
 // ─── Parse documents ──────────────────────────────────────────────────────────
 
 export async function processDocuments(req: Request, res: Response) {
-  const { userId } = getAuth(req)
-  const dspId = await resolveDsp(userId!)
+  const dspId = await getDspId(req)
   if (!dspId) { res.status(403).json({ message: 'Forbidden' }); return }
 
   const files = req.files as Express.Multer.File[] | undefined
@@ -129,8 +134,7 @@ const saveSchema = z.object({
 })
 
 export async function saveScorecard(req: Request, res: Response) {
-  const { userId } = getAuth(req)
-  const dspId = await resolveDsp(userId!)
+  const dspId = await getDspId(req)
   if (!dspId) { res.status(403).json({ message: 'Forbidden' }); return }
 
   const parsed = saveSchema.safeParse(req.body)
@@ -205,8 +209,7 @@ export async function saveScorecard(req: Request, res: Response) {
 // ─── List weeks ───────────────────────────────────────────────────────────────
 
 export async function listWeeks(req: Request, res: Response) {
-  const { userId } = getAuth(req)
-  const dspId = await resolveDsp(userId!)
+  const dspId = await getDspId(req)
   if (!dspId) { res.status(403).json({ message: 'Forbidden' }); return }
 
   const weeks = await prisma.scorecardWeek.findMany({
@@ -229,8 +232,7 @@ export async function listWeeks(req: Request, res: Response) {
 // ─── Get week detail ──────────────────────────────────────────────────────────
 
 export async function getWeek(req: Request, res: Response) {
-  const { userId } = getAuth(req)
-  const dspId = await resolveDsp(userId!)
+  const dspId = await getDspId(req)
   if (!dspId) { res.status(403).json({ message: 'Forbidden' }); return }
 
   const weekId = String(req.params.weekId)
@@ -261,8 +263,7 @@ export async function getWeek(req: Request, res: Response) {
 // ─── Delete week ──────────────────────────────────────────────────────────────
 
 export async function deleteWeek(req: Request, res: Response) {
-  const { userId } = getAuth(req)
-  const dspId = await resolveDsp(userId!)
+  const dspId = await getDspId(req)
   if (!dspId) { res.status(403).json({ message: 'Forbidden' }); return }
 
   const weekId2 = String(req.params.weekId)
@@ -279,8 +280,7 @@ export async function deleteWeek(req: Request, res: Response) {
 // ─── Multi-week comparison ───────────────────────────────────────────────────
 
 export async function compareWeeks(req: Request, res: Response) {
-  const { userId } = getAuth(req)
-  const dspId = await resolveDsp(userId!)
+  const dspId = await getDspId(req)
   if (!dspId) { res.status(403).json({ message: 'Forbidden' }); return }
 
   const weekId = String(req.params.weekId)

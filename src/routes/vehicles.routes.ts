@@ -6,6 +6,7 @@ import {
   deleteVehicle,
   listVehicleLogs,
   listVehicleImages,
+  listVehicleInspections,
   uploadVehicleImage,
   deleteVehicleImage,
   imageUploadMiddleware,
@@ -21,6 +22,7 @@ router.patch('/:id', updateVehicle)
 router.delete('/:id', deleteVehicle)
 router.get('/:id/logs', listVehicleLogs)
 router.get('/:id/images', listVehicleImages)
+router.get('/:id/inspections', listVehicleInspections)
 router.post('/:id/images', imageUploadMiddleware, uploadVehicleImage)
 router.delete('/:id/images/:imageId', deleteVehicleImage)
 router.post('/:id/service-periods', createServicePeriod)

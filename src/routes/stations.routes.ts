@@ -14,6 +14,13 @@ import {
   updateStationVehicleType, deleteStationVehicleType,
 } from '../controllers/station-vehicle-types.controller'
 import { getNotificationConfig, upsertNotificationConfig } from '../controllers/notification-config.controller'
+import {
+  listStationMap,
+  createReferenceLocation, updateReferenceLocation, deleteReferenceLocation,
+  createStagingLocation, updateStagingLocation, deleteStagingLocation,
+  moveStagingLocation,
+  importStationMap, importStationMapFile, stationMapUploadMiddleware,
+} from '../controllers/station-map.controller'
 
 const router = Router()
 
@@ -61,8 +68,25 @@ router.delete('/:id/shift-types/:shiftTypeId', deleteShiftType)
 router.get('/:id/loadout-template', getLoadOutTemplate)
 router.patch('/:id/loadout-template', updateLoadOutTemplate)
 
+// RTS Template (per station)
+import { getRTSTemplate, updateRTSTemplate } from '../controllers/rts.controller'
+router.get('/:id/rts-template', getRTSTemplate)
+router.patch('/:id/rts-template', updateRTSTemplate)
+
 // Notification Config
 router.get('/:id/notification-config', getNotificationConfig)
 router.put('/:id/notification-config/:type', upsertNotificationConfig)
+
+// Station Map
+router.get('/:id/station-map', listStationMap)
+router.post('/:id/station-map/reference-locations', createReferenceLocation)
+router.patch('/:id/station-map/reference-locations/:refId', updateReferenceLocation)
+router.delete('/:id/station-map/reference-locations/:refId', deleteReferenceLocation)
+router.post('/:id/station-map/reference-locations/:refId/staging-locations', createStagingLocation)
+router.patch('/:id/station-map/staging-locations/:stagingId', updateStagingLocation)
+router.delete('/:id/station-map/staging-locations/:stagingId', deleteStagingLocation)
+router.patch('/:id/station-map/staging-locations/:stagingId/move', moveStagingLocation)
+router.post('/:id/station-map/import', importStationMap)
+router.post('/:id/station-map/import-file', stationMapUploadMiddleware, importStationMapFile)
 
 export default router
