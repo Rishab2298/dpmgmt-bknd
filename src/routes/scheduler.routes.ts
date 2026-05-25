@@ -1,5 +1,5 @@
 import { Router } from 'express'
-import { requireAuth } from '../middleware/auth'
+import { requireAuth, requireAuthOrExtensionToken } from '../middleware/auth'
 import {
   getGrid, getLoadOut, getAvailableDrivers, createShift,
   getWorkBlock, updateWorkBlock, deleteShift,
@@ -11,6 +11,11 @@ import {
 } from '../controllers/scheduler.controller'
 
 const router = Router()
+
+// Extension-token-compatible routes (must be before router.use(requireAuth()))
+router.post('/import/parse', requireAuthOrExtensionToken(), importUploadMiddleware, importParse)
+router.post('/import/execute', requireAuthOrExtensionToken(), importExecute)
+router.post('/import/routes-execute', requireAuthOrExtensionToken(), importRoutesExecute)
 
 router.use(requireAuth())
 
@@ -30,9 +35,5 @@ router.delete('/shifts/:shiftId/devices/:deviceId', removeDevice)
 router.post('/shifts/:shiftId/rescue', createRescueShift)
 router.post('/shifts/:shiftId/send-home', sendHome)
 router.get('/shifts/:shiftId/logs', getShiftLogs)
-
-router.post('/import/parse', importUploadMiddleware, importParse)
-router.post('/import/execute', importExecute)
-router.post('/import/routes-execute', importRoutesExecute)
 
 export default router

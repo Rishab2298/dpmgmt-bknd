@@ -91,6 +91,18 @@ function formatDateStr(d: Date): string {
   return `${y}-${m}-${day}`
 }
 
+/** Resolve DSP ID from extension token or Clerk auth */
+async function getDspId(req: Request): Promise<string | null> {
+  if (req.extensionDspId) return req.extensionDspId
+  const { userId } = getAuth(req)
+  if (!userId) return null
+  const emp = await prisma.employee.findUnique({
+    where: { clerkUserId: userId },
+    select: { dspId: true },
+  })
+  return emp?.dspId ?? null
+}
+
 /**
  * Checks if a proposed shift overlaps with any existing shifts for the employee.
  * Handles overnight shifts by checking adjacent dates.
@@ -1033,15 +1045,14 @@ interface ImportConflict {
 // ─── POST /api/scheduler/import/parse ────────────────────────────────────────
 
 export async function importParse(req: Request, res: Response) {
-  const { userId } = getAuth(req)
-  const me = await getCallerEmployee(userId!)
-  if (!me?.dspId) { res.status(404).json({ message: 'DSP not found' }); return }
+  const dspId = await getDspId(req)
+  if (!dspId) { res.status(404).json({ message: 'DSP not found' }); return }
   if (!req.file) { res.status(400).json({ message: 'No file uploaded' }); return }
 
   const { stationId } = req.body as { stationId?: string }
   if (!stationId) { res.status(400).json({ message: 'stationId is required' }); return }
 
-  const station = await prisma.station.findFirst({ where: { id: stationId, dspId: me.dspId } })
+  const station = await prisma.station.findFirst({ where: { id: stationId, dspId } })
   if (!station) { res.status(404).json({ message: 'Station not found' }); return }
 
   // Parse workbook — prefer "Rostered Work Blocks" sheet
@@ -1052,7 +1063,7 @@ export async function importParse(req: Request, res: Response) {
 
   // Auto-detect file type: Routes file has "Route code" + "Transporter Id" in first row
   if (rows.length > 0 && 'Route code' in rows[0] && 'Transporter Id' in rows[0]) {
-    return handleRoutesParse(req, res, rows, me, stationId)
+    return handleRoutesParse(req, res, rows, dspId, stationId)
   }
 
   // Amazon DSP format:
@@ -1120,7 +1131,7 @@ export async function importParse(req: Request, res: Response) {
 
   // Resolve employees by transporterId
   const employees = await prisma.employee.findMany({
-    where: { dspId: me.dspId, transporterId: { in: [...seenTransporterIds] } },
+    where: { dspId, transporterId: { in: [...seenTransporterIds] } },
     select: { id: true, legalFirstName: true, legalLastName: true, transporterId: true },
   })
   const empByTransporter = new Map(employees.map(e => [e.transporterId!, e]))
@@ -1157,7 +1168,7 @@ export async function importParse(req: Request, res: Response) {
   const allEmpIds = [...new Set(entries.map(e => e.employeeId))]
 
   const existingShifts = await prisma.shift.findMany({
-    where: { stationId, dspId: me.dspId, employeeId: { in: allEmpIds }, date: { in: allDates } },
+    where: { stationId, dspId, employeeId: { in: allEmpIds }, date: { in: allDates } },
     select: {
       id: true, employeeId: true, date: true, startTime: true, endTime: true,
       shiftType: { select: { name: true } },
@@ -1205,7 +1216,7 @@ export async function importParse(req: Request, res: Response) {
 async function handleRoutesParse(
   req: Request, res: Response,
   rows: Record<string, string>[],
-  me: { id: string; dspId: string | null },
+  dspId: string,
   stationId: string,
 ) {
   // Extract date from filename: "Routes_DIN6_2026-05-17_00_47 (GMT+5_30).xlsx"
@@ -1233,7 +1244,7 @@ async function handleRoutesParse(
 
   // Resolve employees by transporterId
   const employees = await prisma.employee.findMany({
-    where: { dspId: me.dspId!, transporterId: { in: [...allTransporterIds] } },
+    where: { dspId, transporterId: { in: [...allTransporterIds] } },
     select: { id: true, legalFirstName: true, legalLastName: true, transporterId: true },
   })
   const empByTid = new Map(employees.map(e => [e.transporterId!, e]))
@@ -1242,7 +1253,7 @@ async function handleRoutesParse(
   // Find existing shifts on this date for matched employees
   const matchedEmpIds = employees.map(e => e.id)
   const existingShifts = await prisma.shift.findMany({
-    where: { stationId, dspId: me.dspId!, date, employeeId: { in: matchedEmpIds } },
+    where: { stationId, dspId, date, employeeId: { in: matchedEmpIds } },
     select: { id: true, employeeId: true, routes: true },
   })
   const shiftByEmpId = new Map(existingShifts.map(s => [s.employeeId, s]))
@@ -1296,9 +1307,8 @@ const routesExecuteSchema = z.object({
 })
 
 export async function importRoutesExecute(req: Request, res: Response) {
-  const { userId } = getAuth(req)
-  const me = await getCallerEmployee(userId!)
-  if (!me?.dspId) { res.status(404).json({ message: 'DSP not found' }); return }
+  const dspId = await getDspId(req)
+  if (!dspId) { res.status(404).json({ message: 'DSP not found' }); return }
 
   const parsed = routesExecuteSchema.safeParse(req.body)
   if (!parsed.success) { res.status(400).json({ message: parsed.error.issues[0].message }); return }
@@ -1315,7 +1325,7 @@ export async function importRoutesExecute(req: Request, res: Response) {
   let updated = 0
   for (const [shiftId, routeCodes] of byShift) {
     const shift = await prisma.shift.findUnique({ where: { id: shiftId }, select: { id: true, dspId: true, routes: true } })
-    if (!shift || shift.dspId !== me.dspId) continue
+    if (!shift || shift.dspId !== dspId) continue
     const merged = [...new Set([...shift.routes, ...routeCodes])]
     await prisma.shift.update({ where: { id: shiftId }, data: { routes: merged } })
     updated++
@@ -1344,16 +1354,15 @@ const importExecuteSchema = z.object({
 })
 
 export async function importExecute(req: Request, res: Response) {
-  const { userId } = getAuth(req)
-  const me = await getCallerEmployee(userId!)
-  if (!me?.dspId) { res.status(404).json({ message: 'DSP not found' }); return }
+  const dspId = await getDspId(req)
+  if (!dspId) { res.status(404).json({ message: 'DSP not found' }); return }
 
   const parsed = importExecuteSchema.safeParse(req.body)
   if (!parsed.success) { res.status(400).json({ message: parsed.error.issues[0].message }); return }
 
   const { stationId, entries, conflictChoices, newShiftTypeColors } = parsed.data
 
-  const station = await prisma.station.findFirst({ where: { id: stationId, dspId: me.dspId } })
+  const station = await prisma.station.findFirst({ where: { id: stationId, dspId } })
   if (!station) { res.status(404).json({ message: 'Station not found' }); return }
 
   // Resolve / auto-create shift types
@@ -1398,7 +1407,7 @@ export async function importExecute(req: Request, res: Response) {
   const allDates = [...new Set(entries.map(e => e.date))]
   const allEmpIds = [...new Set(entries.map(e => e.employeeId))]
   const existingShifts = await prisma.shift.findMany({
-    where: { stationId, dspId: me.dspId, employeeId: { in: allEmpIds }, date: { in: allDates } },
+    where: { stationId, dspId, employeeId: { in: allEmpIds }, date: { in: allDates } },
     select: { id: true, employeeId: true, date: true },
   })
 
@@ -1457,7 +1466,7 @@ export async function importExecute(req: Request, res: Response) {
   if (validEntries.length > 0) {
     await prisma.shift.createMany({
       data: validEntries.map(e => ({
-        dspId: me.dspId!,
+        dspId,
         stationId,
         employeeId: e.employeeId,
         shiftTypeId: nameToId.get(e.shiftTypeName) ?? null,

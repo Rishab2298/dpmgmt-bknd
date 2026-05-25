@@ -1,5 +1,5 @@
 import { Router } from 'express'
-import { requireAuth } from '../middleware/auth'
+import { requireAuth, requireAuthOrExtensionToken } from '../middleware/auth'
 import { getDspStations, getShiftTypes, getDspSkills, getExtensionToken } from '../controllers/dsp.controller'
 import { createStation } from '../controllers/stations.controller'
 import {
@@ -43,8 +43,17 @@ import {
   listIncidentCategories,
   createIncidentCategory,
 } from '../controllers/incidents.controller'
+import {
+  listFuelLogs,
+  createFuelLog,
+  getFuelLogStats,
+} from '../controllers/fuel-logs.controller'
 
 const router = Router()
+
+// Extension-token-compatible routes (must be before router.use(requireAuth()))
+router.post('/employees/bulk-import', requireAuthOrExtensionToken(), uploadMiddleware, bulkImportEmployees)
+router.post('/vehicles/bulk-import', requireAuthOrExtensionToken(), vehicleUploadMiddleware, bulkImportVehicles)
 
 router.use(requireAuth())
 
@@ -61,7 +70,6 @@ router.delete('/qualifications/:qualId', deleteDspQualification)
 
 router.get('/employees', listEmployees)
 router.post('/employees', createEmployee)
-router.post('/employees/bulk-import', uploadMiddleware, bulkImportEmployees)
 
 router.get('/devices', listDevices)
 router.post('/devices', createDevice)
@@ -69,7 +77,6 @@ router.post('/devices/bulk-import', deviceUploadMiddleware, bulkImportDevices)
 
 router.get('/vehicles', listVehicles)
 router.post('/vehicles', createVehicle)
-router.post('/vehicles/bulk-import', vehicleUploadMiddleware, bulkImportVehicles)
 
 router.get('/maintenance-records', listMaintenanceRecords)
 router.post('/maintenance-records', createMaintenanceRecord)
@@ -87,5 +94,9 @@ router.get('/incidents', listIncidents)
 router.post('/incidents', createIncident)
 router.get('/incident-categories', listIncidentCategories)
 router.post('/incident-categories', createIncidentCategory)
+
+router.get('/fuel-logs', listFuelLogs)
+router.get('/fuel-logs/stats', getFuelLogStats)
+router.post('/fuel-logs', createFuelLog)
 
 export default router

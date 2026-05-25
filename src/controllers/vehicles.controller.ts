@@ -1,7 +1,7 @@
 import { Request, Response } from 'express'
 import { getAuth } from '@clerk/express'
 import { z } from 'zod'
-import { VehicleStatus, OwnershipType, ActivityEntityType, VehicleImageCategory } from '@prisma/client'
+import { Prisma, VehicleStatus, OwnershipType, ActivityEntityType, VehicleImageCategory } from '@prisma/client'
 import { prisma } from '../lib/prisma'
 import multer from 'multer'
 import * as XLSX from 'xlsx'
@@ -16,6 +16,13 @@ async function resolveDsp(userId: string): Promise<string | null> {
     select: { dspId: true },
   })
   return emp?.dspId ?? null
+}
+
+function getDspId(req: Request): Promise<string | null> {
+  if (req.extensionDspId) return Promise.resolve(req.extensionDspId)
+  const { userId } = getAuth(req)
+  if (!userId) return Promise.resolve(null)
+  return resolveDsp(userId)
 }
 
 async function resolveVehicleOwnership(userId: string, vehicleId: string) {
@@ -272,16 +279,25 @@ export async function createVehicle(req: Request, res: Response) {
     resolvedStationVehicleTypeId = svt.id
   }
 
-  const vehicle = await prisma.vehicle.create({ data: buildVehicleData(data, dspId, resolvedStationVehicleTypeId), include: VEHICLE_INCLUDE })
+  try {
+    const vehicle = await prisma.vehicle.create({ data: buildVehicleData(data, dspId, resolvedStationVehicleTypeId), include: VEHICLE_INCLUDE })
 
-  const performerName = await resolvePerformerName(userId!)
-  await writeLog({
-    dspId, entityType: 'VEHICLE', entityId: vehicle.id,
-    action: 'Vehicle created',
-    performedByClerkId: userId!, performedByName: performerName,
-  })
+    const performerName = await resolvePerformerName(userId!)
+    await writeLog({
+      dspId, entityType: 'VEHICLE', entityId: vehicle.id,
+      action: 'Vehicle created',
+      performedByClerkId: userId!, performedByName: performerName,
+    })
 
-  res.status(201).json(vehicle)
+    res.status(201).json(vehicle)
+  } catch (err) {
+    if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
+      const target = (err.meta?.target as string[])?.join(', ') ?? 'value'
+      res.status(409).json({ message: `A vehicle with that ${target} already exists` })
+      return
+    }
+    throw err
+  }
 }
 
 // ─── Get vehicle ──────────────────────────────────────────────────────────────
@@ -580,10 +596,12 @@ function colDate(row: Record<string, string>, ...keys: string[]): Date | null {
 }
 
 export async function bulkImportVehicles(req: Request, res: Response) {
-  const { userId } = getAuth(req)
-  const dspId = await resolveDsp(userId!)
+  const dspId = await getDspId(req)
   if (!dspId) { res.status(404).json({ message: 'DSP not found' }); return }
   if (!req.file) { res.status(400).json({ message: 'No file uploaded' }); return }
+
+  const { userId } = getAuth(req)
+  const performerName = userId ? await resolvePerformerName(userId) : 'Extension Sync'
 
   const workbook = XLSX.read(req.file.buffer, { type: 'buffer' })
   // prefer the Vehicle_Template sheet
@@ -597,10 +615,8 @@ export async function bulkImportVehicles(req: Request, res: Response) {
   const qualifications = await prisma.qualification.findMany({ where: { dspId }, select: { id: true, name: true } })
   const qualByName = new Map(qualifications.map((q) => [q.name.toLowerCase(), q.id]))
 
-  // Resolve performer name once for all log entries
-  const performerName = await resolvePerformerName(userId!)
-
   let created = 0
+  let updated = 0
   const errors: string[] = []
 
   for (let i = 0; i < rows.length; i++) {
@@ -646,11 +662,9 @@ export async function bulkImportVehicles(req: Request, res: Response) {
         stationVehicleTypeId = svt.id
       }
 
-      const vehicle = await prisma.vehicle.create({
-        data: {
-          dspId, stationId,
-          vehicleId: vehicleIdRaw,
-          status, stationVehicleTypeId, ownershipType,
+      const vinValue = col(row, 'vin', 'VIN*', 'VIN') || null
+      const vehicleData = {
+          stationId, status, stationVehicleTypeId, ownershipType,
           make: makeRaw, model: modelRaw,
           year: col(row, 'year', 'Year*', 'Year') ? parseInt(col(row, 'year', 'Year*', 'Year')) : null,
           notes: col(row, 'Notes') || null,
@@ -661,7 +675,6 @@ export async function bulkImportVehicles(req: Request, res: Response) {
           licensePlate: col(row, 'licensePlateNumber', 'License Plate*', 'License Plate') || null,
           licensePlateExpiration: colDate(row, 'registrationExpiryDate', 'License Plate Exp_(Y-M-D)'),
           tollCardId: col(row, 'Toll Card ID') || null,
-          vin: col(row, 'vin', 'VIN*', 'VIN') || null,
           tankCapacityGallons: colFloat(row, 'Tank Capacity (gallons)'),
           gasolineType: col(row, 'Gasoline Type') || null,
           fuelCardNumber: col(row, 'Fuel Card #') || null,
@@ -683,22 +696,43 @@ export async function bulkImportVehicles(req: Request, res: Response) {
           rentalRecurringPeriod: col(row, 'Recurring Period') || null,
           rentalStart: colDate(row, 'ownershipStartDate', 'Contract Start Date_(Y-M-D)'),
           rentalEnd: colDate(row, 'ownershipEndDate', 'Contract End Date_(Y-M-D)'),
-        },
-      })
+      }
 
+      // Find existing vehicle by vehicleId or VIN
+      let existing = await prisma.vehicle.findUnique({
+        where: { dspId_vehicleId: { dspId, vehicleId: vehicleIdRaw } },
+      })
+      if (!existing && vinValue) {
+        existing = await prisma.vehicle.findUnique({ where: { vin: vinValue } })
+      }
+
+      let vehicle
+      let isNew: boolean
+      if (existing) {
+        vehicle = await prisma.vehicle.update({
+          where: { id: existing.id },
+          data: { vehicleId: vehicleIdRaw, ...vehicleData },
+        })
+        isNew = false
+      } else {
+        vehicle = await prisma.vehicle.create({
+          data: { dspId, vehicleId: vehicleIdRaw, vin: vinValue, ...vehicleData },
+        })
+        isNew = true
+      }
       await writeLog({
         dspId, entityType: 'VEHICLE', entityId: vehicle.id,
-        action: 'Vehicle imported via bulk import',
-        performedByClerkId: userId!, performedByName: performerName,
+        action: isNew ? 'Vehicle imported via bulk import' : 'Vehicle updated via bulk import',
+        performedByClerkId: userId ?? 'extension', performedByName: performerName,
       })
 
-      created++
+      if (isNew) created++; else updated++
     } catch (err) {
       errors.push(`Row ${rowNum}: ${err instanceof Error ? err.message : 'Unknown error'}`)
     }
   }
 
-  res.json({ created, errors })
+  res.json({ created, updated, errors })
 }
 
 // ─── Vehicle service periods ──────────────────────────────────────────────────

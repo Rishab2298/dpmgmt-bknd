@@ -16,6 +16,13 @@ async function resolveDsp(userId: string): Promise<string | null> {
   return emp?.dspId ?? null
 }
 
+function getDspId(req: Request): Promise<string | null> {
+  if (req.extensionDspId) return Promise.resolve(req.extensionDspId)
+  const { userId } = getAuth(req)
+  if (!userId) return Promise.resolve(null)
+  return resolveDsp(userId)
+}
+
 async function resolveEmployeeOwnership(userId: string, employeeId: string) {
   const requester = await prisma.employee.findUnique({
     where: { clerkUserId: userId },
@@ -512,8 +519,7 @@ function parsePermission(raw: string): PermissionLevel {
 }
 
 export async function bulkImportEmployees(req: Request, res: Response) {
-  const { userId } = getAuth(req)
-  const dspId = await resolveDsp(userId!)
+  const dspId = await getDspId(req)
   if (!dspId) { res.status(404).json({ message: 'No DSP found for this user' }); return }
 
   if (!req.file) { res.status(400).json({ message: 'No file provided' }); return }

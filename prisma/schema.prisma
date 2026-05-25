@@ -100,6 +100,7 @@ enum ActivityEntityType {
   SHIFT
   DOCUMENT
   INCIDENT
+  FUEL_LOG
 }
 
 enum ConversationType {
@@ -165,6 +166,27 @@ enum ShiftActionStatus {
   EXPIRED            // shift date passed
 }
 
+enum FuelLogStatus {
+  DRAFT
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+enum FuelType {
+  REGULAR
+  MIDGRADE
+  PREMIUM
+  DIESEL
+  ELECTRIC
+}
+
+enum FuelLogPhotoCategory {
+  RECEIPT
+  GAUGE_BEFORE
+  GAUGE_AFTER
+}
+
 enum NotificationType {
   LICENSE_EXPIRY
   VEHICLE_MAINTENANCE
@@ -178,6 +200,9 @@ enum NotificationType {
   SHIFT_DROP_REQUEST
   SHIFT_DROP_APPROVED
   SHIFT_DROP_DENIED
+  FUEL_LOG_SUBMITTED
+  FUEL_LOG_APPROVED
+  FUEL_LOG_REJECTED
 }
 
 enum NotificationChannel {
@@ -230,6 +255,13 @@ model Dsp {
   shiftSwapRequests  ShiftSwapRequest[]
   incidentCategories IncidentCategory[]
   incidents          Incident[]
+  fuelLogs           FuelLog[]
+  dispatchReports    DispatchReport[]
+  routesReports      RoutesReport[]
+  atsRoles           AtsRole[]
+  atsApplicants      AtsApplicant[]
+  atsSettings        AtsSettings?
+  rtsEntries         RtsEntry[]
 }
 
 // Station — Amazon delivery station (DSP can have one primary + TCO stations)
@@ -282,6 +314,9 @@ model Station {
   documents             Document[]
   incidents             Incident[]
   referenceLocations    ReferenceLocation[]
+  fuelLogs              FuelLog[]
+  dispatchReports       DispatchReport[]
+  routesReports         RoutesReport[]
 
   @@unique([dspId, code])
 }
@@ -407,6 +442,19 @@ model Employee {
   // Incidents
   incidentsAsDriver Incident[] @relation("IncidentDriver")
   incidentsReported Incident[] @relation("IncidentReporter")
+
+  // Fuel Logs
+  fuelLogsAsDriver  FuelLog[] @relation("FuelLogDriver")
+  fuelLogsReviewed  FuelLog[] @relation("FuelLogReviewer")
+
+  // Dispatch Reports
+  dispatchReportEntries DispatchReportEntry[]
+
+  // Routes Reports
+  routesReportEntries   RoutesReportEntry[]
+
+  // Performance — RTS
+  rtsEntries RtsEntry[]
 }
 
 // Vehicle — a van in the fleet
@@ -519,6 +567,7 @@ model Vehicle {
   shifts                 Shift[]               // day-of assignments
   loadOutSubmissions     LoadOutSubmission[]
   rtsSubmissions         RTSSubmission[]
+  fuelLogs               FuelLog[]
 
   @@unique([dspId, vehicleId])
 }
@@ -1511,6 +1560,17 @@ enum BroadcastFrequency {
   WEEKLY
 }
 
+enum AtsApplicantStepStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+enum AtsSmsDirection {
+  OUTBOUND
+  INBOUND
+}
+
 enum BroadcastStatus {
   ACTIVE
   INACTIVE
@@ -1806,4 +1866,325 @@ model Document {
 
   @@index([dspId, category])
   @@index([dspId, expiryDate])
+}
+
+// FuelLog — tracks fuel fill-ups (gas/diesel) and EV charging events
+model FuelLog {
+  id        String @id @default(cuid())
+  dspId     String
+  vehicleId String
+  driverId  String // Employee who fueled/charged
+  stationId String // DSP station (for filtering), NOT the fuel station
+
+  // Fuel / charge details
+  fuelType       FuelType
+  fuelCardNumber String?  // card used (may differ from vehicle default)
+  locationName   String?  // fuel station / charging station name
+  locationAddress String? // Google Places address
+  locationLat    Float?
+  locationLng    Float?
+
+  // Levels (0–100 percentage)
+  fuelLevelBefore Float
+  fuelLevelAfter  Float
+
+  // Amounts
+  amountFilled  Float             // gallons for gas/diesel, kWh for electric
+  amountUnit    String @default("gallons") // "gallons" | "kWh"
+  cost          Float             // total cost in currency
+  odometerReading Float?          // optional mileage at time of fueling
+
+  // Workflow
+  status               FuelLogStatus @default(DRAFT)
+  submittedAt          DateTime?
+  reviewedByEmployeeId String?
+  reviewedAt           DateTime?
+  reviewNote           String?  // operator note on approve/reject
+  driverNote           String?  // optional driver note
+
+  fueledAt  DateTime  @default(now()) // when the fueling actually happened
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  dsp        Dsp       @relation(fields: [dspId], references: [id])
+  vehicle    Vehicle   @relation(fields: [vehicleId], references: [id])
+  driver     Employee  @relation("FuelLogDriver", fields: [driverId], references: [id])
+  station    Station   @relation(fields: [stationId], references: [id])
+  reviewedBy Employee? @relation("FuelLogReviewer", fields: [reviewedByEmployeeId], references: [id])
+  photos     FuelLogPhoto[]
+
+  @@index([dspId, status])
+  @@index([dspId, vehicleId])
+  @@index([dspId, driverId])
+  @@index([dspId, fueledAt])
+}
+
+// FuelLogPhoto — receipt, gauge-before, gauge-after images for a fuel log
+model FuelLogPhoto {
+  id        String               @id @default(cuid())
+  fuelLogId String
+  dspId     String
+  category  FuelLogPhotoCategory // RECEIPT, GAUGE_BEFORE, GAUGE_AFTER
+  url       String               // /uploads/fuel-logs/{filename}
+  fileName  String
+  uploadedByClerkId String?
+  uploadedByName    String?
+
+  createdAt DateTime @default(now())
+
+  fuelLog FuelLog @relation(fields: [fuelLogId], references: [id], onDelete: Cascade)
+
+  @@index([fuelLogId, category])
+}
+
+// DispatchReport — one daily dispatch report per station per DSP (scraped from Cortex Itineraries page)
+model DispatchReport {
+  id         String   @id @default(cuid())
+  dspId      String
+  stationId  String
+  date       DateTime // dispatch date (midnight UTC of that date)
+  filePath   String?  // stored XLSX path
+  totalDAs   Int      @default(0)
+  totalRoutes Int     @default(0)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  dsp     Dsp                   @relation(fields: [dspId], references: [id], onDelete: Cascade)
+  station Station               @relation(fields: [stationId], references: [id], onDelete: Cascade)
+  entries DispatchReportEntry[]
+
+  @@unique([dspId, stationId, date])
+  @@index([dspId])
+  @@index([stationId])
+}
+
+// DispatchReportEntry — one row per DA for a dispatch report
+model DispatchReportEntry {
+  id                  String   @id @default(cuid())
+  reportId            String
+  daName              String
+  transporterId       String?
+  employeeId          String?
+  routeCodes          String[]
+  stopsCompleted      Int?
+  stopsTotal          Int?
+  deliveriesCompleted Int?
+  deliveriesTotal     Int?
+  lastPlannedStop     Int?
+  lastActualStop      Int?
+  lastPlannedTime     String?
+  lastActualTime      String?
+  departureTime       String?
+  outboundStem        String?
+  plannedReturn       String?
+  projectedReturn     String?
+  breaksTaken         String?
+  batteryPercent      Int?
+  lastActivity        String?
+  phone               String?
+
+  // New fields from Amazon itineraries XLSX
+  deliveryServiceType String?  // "Route Type" — Delivery Service Type
+  actualDeparture     String?  // "Wave Time" — Actual departure time
+  totalPackages       Int?     // "PSTD" — total packages
+  appSignOut          String?  // App sign-out time
+  lastDeliveryTime    String?  // cortex_last_stop_execution_time
+  restBreakMinutes    Int?     // cortex_total_break_time_used (minutes)
+  vinNumber           String?  // cortex_vin_number (for vehicle matching)
+
+  // Resolved from scheduler/shifts
+  deviceName          String?  // Device name from ShiftDevice
+  vanNumber           String?  // Vehicle ID (user-entered) from Shift.vehicle
+
+  // Editable fields
+  bpNo      String?
+  bc        Int?
+  utl       Int?
+  uta       Int?
+  mis       Int?
+  mp        Int?
+  dCount    Int?     // "D" column
+  rjd       Int?
+  nsl       Int?
+  fdd       Int?
+  oodt      Int?
+  mealBreak Int     @default(30)
+  comments  String?
+
+  report   DispatchReport @relation(fields: [reportId], references: [id], onDelete: Cascade)
+  employee Employee?      @relation(fields: [employeeId], references: [id], onDelete: SetNull)
+
+  @@index([reportId])
+  @@index([employeeId])
+}
+
+// RoutesReport — one daily routes report per station per DSP
+model RoutesReport {
+  id          String   @id @default(cuid())
+  dspId       String
+  stationId   String
+  date        DateTime
+  sourceTime  String?
+  totalRoutes Int      @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  dsp     Dsp                 @relation(fields: [dspId], references: [id], onDelete: Cascade)
+  station Station             @relation(fields: [stationId], references: [id], onDelete: Cascade)
+  entries RoutesReportEntry[]
+
+  @@unique([dspId, stationId, date])
+  @@index([dspId])
+  @@index([stationId])
+}
+
+// RoutesReportEntry — one row per driver/route
+model RoutesReportEntry {
+  id                        String  @id @default(cuid())
+  reportId                  String
+  transporterId             String?
+  driverName                String
+  employeeId                String?
+  routeCode                 String?
+  appSignIn                 String?
+  driver10thHour            String?
+  flexStartTime             String?
+  flexCutOffTime            String?
+  plannedLastStopWorkplace  String?  // Planned last stop as per Workplace + 1hr Break
+  plannedLastStop           String?
+  routeDuration             String?
+  routeDurationHours        Float?
+  vanType                   String?
+  location                  String?
+
+  report   RoutesReport @relation(fields: [reportId], references: [id], onDelete: Cascade)
+  employee Employee?    @relation(fields: [employeeId], references: [id], onDelete: SetNull)
+
+  @@index([reportId])
+  @@index([employeeId])
+}
+
+// ─── ATS (Applicant Tracking System) ────────────────────────────────────────
+
+model AtsRole {
+  id        String   @id @default(cuid())
+  dspId     String
+  name      String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  dsp        Dsp              @relation(fields: [dspId], references: [id], onDelete: Cascade)
+  steps      AtsRoleStep[]
+  applicants AtsApplicant[]
+
+  @@unique([dspId, name])
+  @@index([dspId])
+}
+
+model AtsRoleStep {
+  id        String   @id @default(cuid())
+  roleId    String
+  name      String
+  sortOrder Int      @default(0)
+  createdAt DateTime @default(now())
+
+  role           AtsRole            @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  applicantSteps AtsApplicantStep[]
+
+  @@unique([roleId, name])
+  @@index([roleId, sortOrder])
+}
+
+model AtsApplicant {
+  id          String   @id @default(cuid())
+  dspId       String
+  roleId      String
+  firstName   String
+  lastName    String
+  email       String
+  phone       String
+  countryCode String   @default("+1")
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  dsp         Dsp                @relation(fields: [dspId], references: [id], onDelete: Cascade)
+  role        AtsRole            @relation(fields: [roleId], references: [id])
+  steps       AtsApplicantStep[]
+  smsMessages AtsSmsMessage[]
+
+  @@index([dspId])
+  @@index([dspId, roleId])
+}
+
+model AtsApplicantStep {
+  id             String                 @id @default(cuid())
+  applicantId    String
+  roleStepId     String
+  status         AtsApplicantStepStatus @default(PENDING)
+  resolvedByName String?
+  resolvedAt     DateTime?
+  createdAt      DateTime               @default(now())
+  updatedAt      DateTime               @updatedAt
+
+  applicant AtsApplicant @relation(fields: [applicantId], references: [id], onDelete: Cascade)
+  roleStep  AtsRoleStep  @relation(fields: [roleStepId], references: [id], onDelete: Cascade)
+
+  @@unique([applicantId, roleStepId])
+  @@index([applicantId])
+}
+
+model AtsSmsMessage {
+  id          String          @id @default(cuid())
+  dspId       String
+  applicantId String
+  direction   AtsSmsDirection
+  body        String
+  providerSid String?
+  sentAt      DateTime        @default(now())
+
+  applicant AtsApplicant @relation(fields: [applicantId], references: [id], onDelete: Cascade)
+
+  @@index([applicantId, sentAt])
+  @@index([dspId])
+}
+
+model AtsSettings {
+  id                     String   @id @default(cuid())
+  dspId                  String   @unique
+  notifyOnStepChange     Boolean  @default(false)
+  notifyChannel          String   @default("SMS")
+  welcomeMessageTemplate String?
+  autoSendWelcome        Boolean  @default(true)
+  createdAt              DateTime @default(now())
+  updatedAt              DateTime @updatedAt
+
+  dsp Dsp @relation(fields: [dspId], references: [id], onDelete: Cascade)
+}
+
+// ─── Performance ─────────────────────────────────────────────────────────────
+
+// RtsEntry — one Return-to-Station record per tracking ID per DSP
+model RtsEntry {
+  id                   String   @id @default(cuid())
+  dspId                String
+  trackingId           String   // Amazon tracking ID (e.g. TBA331249866221)
+  transporterId        String   // Amazon transporter ID — links to Employee.transporterId
+  deliveryAssociate    String   // DA name as it appears in the CSV
+  employeeId           String?  // FK to Employee (matched via transporterId during import)
+  impactDcr            Boolean  // Y/N — does this RTS impact DCR?
+  rtsCode              String   // DA-selected RTS reason code
+  additionalInfo       String?  // optional additional information
+  exemptionReason      String   // e.g. "No Exemption Applied", "Contact Compliant"
+  plannedDeliveryDate  DateTime // the delivery date from the CSV
+  serviceArea          String   // station code (e.g. DIN6)
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  dsp      Dsp       @relation(fields: [dspId], references: [id], onDelete: Cascade)
+  employee Employee? @relation(fields: [employeeId], references: [id], onDelete: SetNull)
+
+  @@unique([dspId, trackingId])
+  @@index([dspId, plannedDeliveryDate])
+  @@index([dspId, transporterId])
+  @@index([employeeId])
 }

@@ -32,6 +32,11 @@ import notificationRoutes from './routes/notifications.routes'
 import documentsRoutes from './routes/documents.routes'
 import shiftActionsRoutes from './routes/shift-actions.routes'
 import incidentsRoutes from './routes/incidents.routes'
+import fuelLogsRoutes from './routes/fuel-logs.routes'
+import dispatchReportsRoutes from './routes/dispatch-reports.routes'
+import routesReportsRoutes from './routes/routes-reports.routes'
+import atsRoutes from './routes/ats.routes'
+import performanceRoutes from './routes/performance.routes'
 
 const app = express()
 
@@ -78,6 +83,11 @@ app.use('/api/notifications', notificationRoutes)
 app.use('/api/documents', documentsRoutes)
 app.use('/api/shift-actions', shiftActionsRoutes)
 app.use('/api/incidents', incidentsRoutes)
+app.use('/api/fuel-logs', fuelLogsRoutes)
+app.use('/api/dispatch-reports', dispatchReportsRoutes)
+app.use('/api/routes-reports', routesReportsRoutes)
+app.use('/api/ats', atsRoutes)
+app.use('/api/performance', performanceRoutes)
 
 Sentry.setupExpressErrorHandler(app)
 app.use(errorHandler)
